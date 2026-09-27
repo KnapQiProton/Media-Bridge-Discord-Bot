@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  televid-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: televid-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Jika Teldrive dan Postgres berada di Docker network yang sama,
+    # hubungkan container ini ke network tersebut:
+    # networks:
+    #   - teldrive-network
+
+# networks:
+#   teldrive-network:
+#     external: true
