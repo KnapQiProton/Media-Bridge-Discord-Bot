@@ -1,25 +1,22 @@
 """
-Discord Bot Televid.
-Slash commands:
-- /televid <link_telegram>: Generate direct streaming link untuk Discord video embed.
-- /televid-info <link_telegram>: Tampilkan metadata video tanpa link streaming.
+Televid Discord Bot (Direct Telegram Streamer).
+Slash Commands:
+- /televid <link_telegram>: Menghasilkan playable direct streaming link di Discord.
+- /televid-info <link_telegram>: Melihat metadata video tanpa membagikan link streaming.
 """
 
 import sys
+import asyncio
 import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
+from aiohttp import web
 
 from config import Config
 from telegram_parser import parse_telegram_link
-from teldrive_client import (
-    TeldriveClient,
-    FileNotFoundInTeldriveError,
-    TeldriveOfflineError,
-    TeldriveAuthError,
-    TeldriveError,
-)
+from telegram_streamer import TelegramStreamer
+from stream_server import create_stream_app
 
 # Setup logging
 logging.basicConfig(
@@ -32,23 +29,44 @@ logger = logging.getLogger("televid.bot")
 # Validasi konfigurasi awal
 Config.validate()
 
-# Inisialisasi Discord Intents dan Bot
+# Inisialisasi Discord Intents & Bot
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Inisialisasi Teldrive Client
-teldrive = TeldriveClient()
+# Inisialisasi Telegram Streamer Client
+tg_streamer = TelegramStreamer()
+runner: web.AppRunner = None
+
+
+async def start_web_server():
+    """Menjalankan aiohttp web server pada event loop yang sama dengan bot."""
+    global runner
+    app = create_stream_app(tg_streamer)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, Config.WEB_HOST, Config.WEB_PORT)
+    await site.start()
+    logger.info(f"🌐 HTTP Stream Server berjalan di http://{Config.WEB_HOST}:{Config.WEB_PORT}")
 
 
 @bot.event
 async def on_ready():
-    """Event dipanggil saat bot berhasil online dan login ke Discord."""
-    logger.info(f"🤖 Bot berhasil login sebagai: {bot.user} (ID: {bot.user.id})")
+    """Event saat Discord Bot berhasil terhubung."""
+    logger.info(f"🤖 Bot Discord berhasil login sebagai: {bot.user} (ID: {bot.user.id})")
 
-    # Inisialisasi client Teldrive (database pool jika ada)
-    await teldrive.init()
+    # 1. Jalankan koneksi Telegram MTProto
+    try:
+        await tg_streamer.start()
+    except Exception as e:
+        logger.error(f"❌ Gagal menghubungkan ke Telegram: {e}")
 
-    # Sinkronisasi slash command ke Guild tertentu (instan) atau Global
+    # 2. Jalankan HTTP Web Stream Server
+    try:
+        await start_web_server()
+    except Exception as e:
+        logger.error(f"❌ Gagal menyalakan web streaming server: {e}")
+
+    # 3. Sinkronisasi Slash Commands
     try:
         if Config.DISCORD_GUILD_ID:
             guild = discord.Object(id=Config.DISCORD_GUILD_ID)
@@ -67,7 +85,7 @@ async def on_ready():
         name="video Telegram via /televid"
     )
     await bot.change_presence(status=discord.Status.online, activity=activity)
-    logger.info("🚀 Televid Bot siap digunakan!")
+    logger.info("🚀 Televid Streamer Bot siap digunakan!")
 
 
 @bot.tree.command(
@@ -78,13 +96,7 @@ async def on_ready():
 async def televid_command(interaction: discord.Interaction, link: str):
     """
     Handler untuk slash command /televid <link>.
-    Alur kerja:
-    1. Parse link Telegram -> dapat message_id
-    2. Query Teldrive -> dapat file_id & metadata
-    3. Generate direct stream URL
-    4. Reply URL ke Discord untuk auto-embed streaming
     """
-    # Defer interaction agar tidak timeout (Discord batas 3 detik untuk initial response)
     await interaction.response.defer(thinking=True)
 
     # 1. Parse link Telegram
@@ -93,67 +105,62 @@ async def televid_command(interaction: discord.Interaction, link: str):
     except ValueError:
         await interaction.followup.send(
             "❌ **Format link tidak valid.**\n"
-            "Pastikan link berbentuk `https://t.me/c/<channel_id>/<message_id>` atau `https://t.me/<channel_name>/<message_id>`.",
+            "Pastikan link berbentuk `https://t.me/c/<channel_id>/<message_id>` atau `https://t.me/<username>/<message_id>`.",
             ephemeral=True
         )
         return
 
-    # 2. Query Teldrive
+    # 2. Ambil channel target (bisa dari raw_channel_id atau username)
+    channel_target = parsed.full_channel_id or parsed.raw_channel_id or parsed.username
+
+    # 3. Ambil metadata media dari Telegram
     try:
-        file_info = await teldrive.get_file_by_message_id(
-            message_id=parsed.message_id,
-            channel_id=parsed.raw_channel_id or Config.TELDRIVE_CHANNEL_ID
-        )
-    except FileNotFoundInTeldriveError:
+        info = await tg_streamer.get_media_info(channel_target, parsed.message_id)
+    except PermissionError as e:
         await interaction.followup.send(
-            "⚠️ **Video belum ada di Teldrive, upload dulu via Teldrive UI.**",
+            f"⚠️ **Akses Ditolak:** {e}",
             ephemeral=True
         )
         return
-    except TeldriveOfflineError:
+    except FileNotFoundError:
         await interaction.followup.send(
-            "🔌 **Teldrive sedang down, coba lagi nanti.**",
+            f"❌ **Pesan ID `{parsed.message_id}` tidak ditemukan** di channel tersebut.",
             ephemeral=True
         )
         return
-    except TeldriveAuthError:
+    except ValueError as e:
         await interaction.followup.send(
-            "🔒 **Autentikasi Teldrive gagal.** Periksa konfigurasi `TELDRIVE_ACCESS_TOKEN` di server bot.",
-            ephemeral=True
-        )
-        return
-    except TeldriveError as e:
-        await interaction.followup.send(
-            f"❌ **Terjadi kesalahan Teldrive:** {e}",
+            f"⚠️ **Bukan Video:** {e}",
             ephemeral=True
         )
         return
     except Exception as e:
-        logger.exception(f"Unhandled error pada /televid: {e}")
+        logger.exception(f"Error saat memproses /televid: {e}")
         await interaction.followup.send(
-            "❌ Terjadi kesalahan internal saat memproses video.",
+            "❌ Terjadi kesalahan internal saat mengambil media Telegram.",
             ephemeral=True
         )
         return
 
-    # 3. Generate direct stream URL
-    direct_url = teldrive.generate_direct_url(file_info.id, file_info.name)
+    # 4. Generate URL Streaming
+    base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
+    # Gunakan channel_id positif bersih di URL
+    cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
+    stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
 
-    # 4. Kirim respon ke Discord
-    # Meletakkan URL langsung di pesan agar Discord scraper mendeteksi video dan merender inline player
+    # 5. Kirim respon ke Discord
     response_text = (
         f"🎬 **Video siap diputar!**\n"
-        f"**Nama:** `{file_info.name}`\n"
-        f"**Ukuran:** `{file_info.formatted_size}`\n"
-        f"**URL:** {direct_url}"
+        f"**Nama:** `{info.filename}`\n"
+        f"**Ukuran:** `{info.formatted_size}`\n"
+        f"**URL:** {stream_url}"
     )
 
-    # Tambahkan action button opsional untuk membuka link di tab baru
     view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Tonton / Download", url=direct_url, style=discord.ButtonStyle.link))
+    view.add_item(discord.ui.Button(label="Tonton / Download", url=stream_url, style=discord.ButtonStyle.link))
 
     await interaction.followup.send(response_text, view=view)
-    logger.info(f"✅ Berhasil memproses televid untuk file '{file_info.name}' (ID: {file_info.id})")
+    logger.info(f"✅ Berhasil memproses televid untuk file '{info.filename}' (Ukuran: {info.formatted_size})")
 
 
 @bot.tree.command(
@@ -164,73 +171,49 @@ async def televid_command(interaction: discord.Interaction, link: str):
 async def televid_info_command(interaction: discord.Interaction, link: str):
     """
     Handler untuk slash command /televid-info <link>.
-    Menampilkan info metadata tanpa expose direct stream URL.
     """
     await interaction.response.defer(thinking=True, ephemeral=True)
 
-    # 1. Parse link Telegram
     try:
         parsed = parse_telegram_link(link)
     except ValueError:
-        await interaction.followup.send(
-            "❌ **Format link tidak valid.**",
-            ephemeral=True
-        )
+        await interaction.followup.send("❌ **Format link tidak valid.**", ephemeral=True)
         return
 
-    # 2. Query Teldrive
+    channel_target = parsed.full_channel_id or parsed.raw_channel_id or parsed.username
+
     try:
-        file_info = await teldrive.get_file_by_message_id(
-            message_id=parsed.message_id,
-            channel_id=parsed.raw_channel_id or Config.TELDRIVE_CHANNEL_ID
-        )
-    except FileNotFoundInTeldriveError:
-        await interaction.followup.send(
-            "⚠️ **Video belum ada di Teldrive, upload dulu via Teldrive UI.**",
-            ephemeral=True
-        )
-        return
-    except TeldriveOfflineError:
-        await interaction.followup.send(
-            "🔌 **Teldrive sedang down, coba lagi nanti.**",
-            ephemeral=True
-        )
-        return
-    except TeldriveAuthError:
-        await interaction.followup.send(
-            "🔒 **Autentikasi Teldrive gagal.** Periksa `TELDRIVE_ACCESS_TOKEN`.",
-            ephemeral=True
-        )
-        return
+        info = await tg_streamer.get_media_info(channel_target, parsed.message_id)
     except Exception as e:
-        logger.exception(f"Unhandled error pada /televid-info: {e}")
-        await interaction.followup.send(
-            "❌ Terjadi kesalahan saat mengambil metadata file.",
-            ephemeral=True
-        )
+        await interaction.followup.send(f"❌ **Gagal mengambil info:** {e}", ephemeral=True)
         return
 
-    # 3. Buat Rich Embed untuk informasi metadata
+    # Format durasi (jika ada)
+    duration_str = "-"
+    if info.duration > 0:
+        mins, secs = divmod(info.duration, 60)
+        hours, mins = divmod(mins, 60)
+        duration_str = f"{hours:02d}:{mins:02d}:{secs:02d}" if hours > 0 else f"{mins:02d}:{secs:02d}"
+
+    # Rich Embed Metadata
     embed = discord.Embed(
-        title="ℹ️ Informasi Metadata Video",
-        description=f"Metadata file dari pesan Telegram `{parsed.message_id}`",
+        title="ℹ️ Informasi Metadata Video Telegram",
+        description=f"Detail media dari pesan ID `{parsed.message_id}`",
         color=discord.Color.blue()
     )
-    embed.add_field(name="📄 Nama File", value=f"`{file_info.name}`", inline=False)
-    embed.add_field(name="📦 Ukuran", value=f"`{file_info.formatted_size}`", inline=True)
-    embed.add_field(name="🎞️ Tipe Konten", value=f"`{file_info.mime_type}`", inline=True)
-    embed.add_field(name="🆔 Teldrive ID", value=f"`{file_info.id}`", inline=False)
-    
-    parts_count = len(file_info.parts) if file_info.parts else 1
-    embed.add_field(name="🧩 Jumlah Parts / Segmen", value=f"`{parts_count} part(s)`", inline=True)
+    embed.add_field(name="📄 Nama File", value=f"`{info.filename}`", inline=False)
+    embed.add_field(name="📦 Ukuran", value=f"`{info.formatted_size}`", inline=True)
+    embed.add_field(name="⏱️ Durasi", value=f"`{duration_str}`", inline=True)
+    embed.add_field(name="🎞️ Tipe Konten", value=f"`{info.mime_type}`", inline=True)
 
-    if parsed.raw_channel_id:
-        embed.add_field(name="📢 Channel ID", value=f"`{parsed.raw_channel_id}`", inline=True)
+    if info.width and info.height:
+        embed.add_field(name="📐 Resolusi", value=f"`{info.width}x{info.height}`", inline=True)
 
-    embed.set_footer(text="Televid Bot • Zero VPS Storage")
+    embed.add_field(name="📢 Channel ID", value=f"`{info.channel_id}`", inline=True)
+    embed.set_footer(text="Televid Streamer • Zero VPS Storage")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
-    logger.info(f"ℹ️ Berhasil menampilkan info file '{file_info.name}'")
+    logger.info(f"ℹ️ Berhasil menampilkan info video '{info.filename}'")
 
 
 if __name__ == "__main__":

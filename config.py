@@ -1,5 +1,5 @@
 """
-Configuration loader for Televid Discord Bot.
+Configuration loader for Televid Streamer Bot.
 Loads environment variables from .env file.
 """
 
@@ -8,35 +8,33 @@ import sys
 from typing import Optional
 from dotenv import load_dotenv
 
-# Muat variabel dari .env
 load_dotenv()
 
 class Config:
-    """Konfigurasi utama aplikasi bot televid."""
+    """Konfigurasi utama Televid Bot (Direct Telegram Streamer)."""
 
-    # Discord Bot Credentials
+    # 1. Discord Bot Credentials
     DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN", "").strip()
     DISCORD_GUILD_ID_RAW: str = os.getenv("DISCORD_GUILD_ID", "").strip()
     DISCORD_GUILD_ID: Optional[int] = int(DISCORD_GUILD_ID_RAW) if DISCORD_GUILD_ID_RAW.isdigit() else None
 
-    # Teldrive Configuration
-    TELDRIVE_API_HOST: str = os.getenv("TELDRIVE_API_HOST", "").strip().rstrip("/")
-    TELDRIVE_ACCESS_TOKEN: str = os.getenv("TELDRIVE_ACCESS_TOKEN", "").strip()
-    TELDRIVE_CHANNEL_ID_RAW: str = os.getenv("TELDRIVE_CHANNEL_ID", "").strip()
-    TELDRIVE_CHANNEL_ID: Optional[int] = (
-        int(TELDRIVE_CHANNEL_ID_RAW) if TELDRIVE_CHANNEL_ID_RAW.lstrip("-").isdigit() else None
-    )
+    # 2. Telegram API Credentials (dari my.telegram.org)
+    TG_API_ID_RAW: str = os.getenv("TG_API_ID", "").strip()
+    TG_API_ID: int = int(TG_API_ID_RAW) if TG_API_ID_RAW.isdigit() else 0
+    TG_API_HASH: str = os.getenv("TG_API_HASH", "").strip()
 
-    # Optional: Direct PostgreSQL Connection to Teldrive Database
-    # Sangat direkomendasikan untuk query instan O(1) by message_id
-    DATABASE_URL: Optional[str] = os.getenv("DATABASE_URL", "").strip() or None
+    # 3. Telegram Bot Token (dari @BotFather) atau User Session String
+    TG_BOT_TOKEN: str = os.getenv("TG_BOT_TOKEN", "").strip()
+    TG_SESSION_STRING: str = os.getenv("TG_SESSION_STRING", "").strip()
 
-    # Custom public streaming URL template (opsional jika menggunakan Reverse Proxy / CDN)
-    # Contoh: "{host}/api/files/{file_id}/content" atau "{host}/stream/{file_id}/{filename}"
-    PUBLIC_STREAM_URL_TEMPLATE: str = os.getenv(
-        "PUBLIC_STREAM_URL_TEMPLATE",
-        "{host}/api/files/{file_id}/content"
-    ).strip()
+    # 4. Web Stream Server Configuration
+    WEB_HOST: str = os.getenv("WEB_HOST", "0.0.0.0").strip()
+    WEB_PORT_RAW: str = os.getenv("WEB_PORT", os.getenv("PORT", "8080")).strip()
+    WEB_PORT: int = int(WEB_PORT_RAW) if WEB_PORT_RAW.isdigit() else 8080
+
+    # 5. Public Streaming Base URL
+    # Contoh: https://bot.domainanda.com atau http://ip-server:8080
+    STREAM_BASE_URL: str = os.getenv("STREAM_BASE_URL", "").strip().rstrip("/")
 
     @classmethod
     def validate(cls) -> None:
@@ -44,11 +42,13 @@ class Config:
         errors = []
         if not cls.DISCORD_TOKEN:
             errors.append("DISCORD_TOKEN wajib diisi di .env")
-        if not cls.TELDRIVE_API_HOST and not cls.DATABASE_URL:
-            errors.append("TELDRIVE_API_HOST atau DATABASE_URL wajib diisi di .env")
-        
+        if not cls.TG_API_ID or not cls.TG_API_HASH:
+            errors.append("TG_API_ID dan TG_API_HASH wajib diisi di .env (dari my.telegram.org)")
+        if not cls.TG_BOT_TOKEN and not cls.TG_SESSION_STRING:
+            errors.append("TG_BOT_TOKEN wajib diisi di .env (dibuat via @BotFather di Telegram)")
+
         if errors:
-            print("❌ Konfigurasi tidak lengkap:", file=sys.stderr)
+            print("❌ Konfigurasi belum lengkap:", file=sys.stderr)
             for err in errors:
                 print(f"  - {err}", file=sys.stderr)
             sys.exit(1)
