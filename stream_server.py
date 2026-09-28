@@ -297,17 +297,10 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{video_title}</title>
 
-  <!-- OpenGraph Video Tags -->
-  <meta property="og:type" content="video.other">
-  <meta property="og:title" content="{video_title}">
-  <meta property="og:description" content="{video_description}">
-  <meta property="og:video:url" content="{stream_url}">
-  <meta property="og:video:secure_url" content="{stream_url}">
-  <meta property="og:video:type" content="video/mp4">
-  <meta property="og:video:width" content="{width}">
-  <meta property="og:video:height" content="{height}">
-
-  <!-- Primary Embed Trigger: og:image poster -->
+  <!-- Discord & Twitter Rich Embed Tags -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="{poster_url}">
+  <meta name="twitter:image:alt" content="{video_title}">
   <meta property="og:image" content="{poster_url}">
   <meta property="og:image:secure_url" content="{poster_url}">
   <meta property="og:image:type" content="image/jpeg">
@@ -315,12 +308,18 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
   <meta property="og:image:height" content="{height}">
   <meta property="og:image:alt" content="{video_title}">
 
-  <!-- Twitter fallback -->
-  <meta name="twitter:card" content="player">
+  <meta property="og:title" content="{video_title}">
   <meta name="twitter:title" content="{video_title}">
-  <meta name="twitter:description" content="{video_description}">
-  <meta name="twitter:image" content="{poster_url}">
-  <meta name="twitter:image:alt" content="{video_title}">
+  <meta property="og:description" content="Streamed via Media Bridge Bot">
+  <meta name="twitter:description" content="Streamed via Media Bridge Bot">
+
+  <!-- OpenGraph Video Tags -->
+  <meta property="og:type" content="video.other">
+  <meta property="og:video:url" content="{stream_url}">
+  <meta property="og:video:secure_url" content="{stream_url}">
+  <meta property="og:video:type" content="video/mp4">
+  <meta property="og:video:width" content="{width}">
+  <meta property="og:video:height" content="{height}">
   <meta name="twitter:player:stream" content="{stream_url}">
   <meta name="twitter:player:stream:content_type" content="video/mp4">
 
