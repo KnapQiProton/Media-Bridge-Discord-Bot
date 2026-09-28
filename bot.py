@@ -105,6 +105,46 @@ async def on_ready():
     logger.info("🚀 Televid Streamer Bot siap digunakan!")
 
 
+@bot.event
+async def on_message(message: discord.Message):
+    """Mendeteksi otomatis jika user mem-paste link Telegram langsung ke chat."""
+    if message.author.bot:
+        return
+
+    content = message.content or ""
+    if "t.me/" in content:
+        match = re.search(r"https?://t\.me/[^\s]+", content)
+        if match:
+            link = match.group(0)
+            try:
+                parsed = parse_telegram_link(link)
+                channel_target = parsed.full_channel_id or parsed.raw_channel_id or parsed.username
+                info = await tg_streamer.get_media_info(channel_target, parsed.message_id)
+
+                base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
+                cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
+                import time
+                watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}?v={int(time.time())}"
+                stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
+
+                response_text = (
+                    f"🎬 **{info.filename}** ({info.formatted_size})\n\n"
+                    f"{watch_url}\n\n"
+                    f"*(Direct Stream: <{stream_url}>)*"
+                )
+
+                view = discord.ui.View()
+                view.add_item(discord.ui.Button(label="🌐 Web Player", url=watch_url, style=discord.ButtonStyle.link))
+                view.add_item(discord.ui.Button(label="⬇️ Download Langsung", url=stream_url, style=discord.ButtonStyle.link))
+
+                await message.reply(response_text, view=view, mention_author=False)
+                logger.info(f"✅ Auto-detect link Telegram berhasil untuk pesan ID {info.message_id}")
+            except Exception as e:
+                logger.debug(f"on_message lewati link '{link}': {e}")
+
+    await bot.process_commands(message)
+
+
 @bot.tree.command(
     name="televid",
     description="Ubah link video Telegram menjadi playable video embed di Discord."
@@ -168,21 +208,23 @@ async def televid_command(interaction: discord.Interaction, link: str):
     # 4. Generate URL Streaming & OpenGraph Watch URL
     base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
     cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
+    import time
+    cache_bust = int(time.time())
+    watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}?v={cache_bust}"
     stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
-    watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
 
     # 5. Kirim respon ke Discord
-    # PENTING: Jangan bungkus stream_url dengan <...> karena Discord akan menonaktifkan embed!
-    # Menempatkan link langsung berakhiran .mp4 pada baris tersendiri akan memicu Discord
-    # untuk menampilkan native inline video player secara langsung di dalam chat.
+    # Meletakkan watch_url pada baris tersendiri memicu Discord scraper untuk membaca
+    # OpenGraph video tags dan menampilkan inline playable HTML5 video player secara langsung di dalam chat.
     response_text = (
         f"🎬 **{info.filename}** ({info.formatted_size})\n\n"
-        f"{stream_url}"
+        f"{watch_url}\n\n"
+        f"*(Direct Stream: <{stream_url}>)*"
     )
 
     view = discord.ui.View()
     view.add_item(discord.ui.Button(label="🌐 Web Player", url=watch_url, style=discord.ButtonStyle.link))
-    view.add_item(discord.ui.Button(label="⬇️ Download", url=stream_url, style=discord.ButtonStyle.link))
+    view.add_item(discord.ui.Button(label="⬇️ Download Langsung", url=stream_url, style=discord.ButtonStyle.link))
 
     await interaction.followup.send(response_text, view=view)
     logger.info(f"✅ Berhasil memproses televid untuk file '{info.filename}' (Ukuran: {info.formatted_size})")

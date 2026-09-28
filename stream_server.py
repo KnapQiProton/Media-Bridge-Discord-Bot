@@ -119,11 +119,17 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
             return response
 
         try:
+            # Jika request berasal dari crawler Discordbot tanpa Range, batasi transfer maksimal 1 MB
+            # agar Discordbot tidak timeout (3-5 detik) saat mencoba mendownload file video besar.
+            user_agent = request.headers.get("User-Agent", "")
+            is_discord_crawler = "Discordbot" in user_agent
+            stream_limit = min(content_length, 1024 * 1024) if (is_discord_crawler and not is_range_request) else content_length
+
             # Stream chunk langsung dari MTProto ke HTTP response tanpa simpan ke disk
             async for chunk in telegram_streamer.iter_stream_chunks(
                 media=info.media,
                 offset=start,
-                limit=content_length,
+                limit=stream_limit,
                 chunk_size=512 * 1024  # 512 KB per chunk
             ):
                 await response.write(chunk)
@@ -144,57 +150,77 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         """
         channel_id_raw = request.match_info.get("channel_id")
         message_id_raw = request.match_info.get("message_id")
-        filename = request.match_info.get("filename", "video.mp4")
 
         try:
             channel_id = int(channel_id_raw)
             message_id = int(message_id_raw)
             info = await telegram_streamer.get_media_info(channel_id, message_id)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Watch endpoint gagal memuat media {channel_id_raw}/{message_id_raw}: {e}")
             raise web.HTTPNotFound(text="Video tidak ditemukan.")
 
         host = request.headers.get("Host", request.host)
         scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
-        stream_url = f"{scheme}://{host}/stream/{channel_id}/{message_id}/{filename}"
+        clean_filename = info.filename
+        watch_url = f"{scheme}://{host}/watch/{channel_id}/{message_id}/{clean_filename}"
+        stream_url = f"{scheme}://{host}/stream/{channel_id}/{message_id}/{clean_filename}"
         thumb_url = f"{scheme}://{host}/thumb/{channel_id}/{message_id}.jpg"
         width = info.width or 1280
         height = info.height or 720
 
         html = f"""<!DOCTYPE html>
-<html>
+<html lang="id">
 <head>
     <meta charset="utf-8">
     <title>{info.filename}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- Discord OpenGraph Video Meta Tags -->
-    <meta property="og:site_name" content="Televid Streamer">
+    <meta name="theme-color" content="#5865F2">
+
+    <!-- OpenGraph Video Meta Tags untuk Discord & Telegram -->
+    <meta property="og:site_name" content="MediaBridge Televid">
     <meta property="og:title" content="{info.filename}">
     <meta property="og:description" content="Ukuran: {info.formatted_size}">
     <meta property="og:type" content="video.other">
-    <meta property="og:image" content="{thumb_url}">
-    <meta property="og:image:type" content="image/jpeg">
+    <meta property="og:url" content="{watch_url}">
+
+    <!-- Video Direct Stream -->
     <meta property="og:video" content="{stream_url}">
     <meta property="og:video:url" content="{stream_url}">
     <meta property="og:video:secure_url" content="{stream_url}">
     <meta property="og:video:type" content="video/mp4">
     <meta property="og:video:width" content="{width}">
     <meta property="og:video:height" content="{height}">
+
+    <!-- Poster Thumbnail -->
+    <meta property="og:image" content="{thumb_url}">
+    <meta property="og:image:url" content="{thumb_url}">
+    <meta property="og:image:secure_url" content="{thumb_url}">
+    <meta property="og:image:type" content="image/jpeg">
+    <meta property="og:image:width" content="{width}">
+    <meta property="og:image:height" content="{height}">
+
     <!-- Twitter Player Card -->
     <meta name="twitter:card" content="player">
     <meta name="twitter:title" content="{info.filename}">
+    <meta name="twitter:description" content="Ukuran: {info.formatted_size}">
     <meta name="twitter:image" content="{thumb_url}">
-    <meta name="twitter:player" content="{stream_url}">
+    <meta name="twitter:player" content="{watch_url}">
     <meta name="twitter:player:width" content="{width}">
     <meta name="twitter:player:height" content="{height}">
+    <meta name="twitter:player:stream" content="{stream_url}">
+    <meta name="twitter:player:stream:content_type" content="video/mp4">
 </head>
-<body style="margin:0; background:#0b0f19; display:flex; align-items:center; justify-content:center; height:100vh;">
-    <video controls autoplay style="max-width:100%; max-height:100%;">
+<body style="margin:0; background:#0b0f19; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; color:#ffffff;">
+    <video controls autoplay playsinline style="max-width:96%; max-height:85vh; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
         <source src="{stream_url}" type="video/mp4">
-        Browser Anda tidak mendukung tag video.
+        Browser Anda tidak mendukung HTML5 video playback.
     </video>
+    <div style="margin-top:12px; font-size:14px; opacity:0.8;">
+        <b>{info.filename}</b> • {info.formatted_size}
+    </div>
 </body>
 </html>"""
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "public, max-age=3600"})
 
     async def handle_thumb(request: web.Request) -> web.Response:
         """Endpoint thumbnail media untuk Discord og:image."""
@@ -205,12 +231,27 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
             message_id = int(message_id_raw)
             thumb_data = await telegram_streamer.get_thumbnail_bytes(channel_id, message_id)
             if thumb_data:
-                return web.Response(body=thumb_data, content_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
-        except Exception:
-            pass
+                content_type = "image/jpeg"
+                if thumb_data.startswith(b"\x89PNG"):
+                    content_type = "image/png"
+                elif thumb_data.startswith(b"GIF"):
+                    content_type = "image/gif"
+                elif thumb_data.startswith(b"RIFF") and b"WEBP" in thumb_data[:16]:
+                    content_type = "image/webp"
+                return web.Response(
+                    body=thumb_data,
+                    content_type=content_type,
+                    headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"}
+                )
+        except Exception as e:
+            logger.debug(f"Gagal mengambil thumbnail: {e}")
 
         # Fallback: 640x360 placeholder PNG
-        return web.Response(body=FALLBACK_THUMB_PNG, content_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+        return web.Response(
+            body=FALLBACK_THUMB_PNG,
+            content_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"}
+        )
 
     # Daftarkan rute
     app.router.add_get("/", handle_health)
