@@ -1,14 +1,14 @@
 """
 HTTP Streaming Server using aiohttp.
 Menyediakan endpoint video streaming berkecepatan tinggi dengan dukungan
-HTTP Range Requests (206 Partial Content) dan OpenGraph Video Embed untuk Discord.
+HTTP Range Requests (206 Partial Content) dan OpenGraph Video Shim Endpoint untuk Discord.
 """
 
 import re
 import struct
 import zlib
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 from aiohttp import web
 
 from telegram_streamer import TelegramStreamer
@@ -31,6 +31,22 @@ FALLBACK_THUMB_PNG = _generate_fallback_png()
 RE_RANGE = re.compile(r"^bytes=(?:(\d+)-(\d+)?|-(\d+))$")
 
 
+def parse_token(token: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Ekstrak channel_id, message_id, filename dari token URL.
+    Mendukung format:
+    - {channel_id}_{message_id}_{filename}
+    - {channel_id}_{message_id}
+    """
+    if not token:
+        return None, None, None
+    parts = token.split("_", 2)
+    if len(parts) >= 2:
+        filename = parts[2] if len(parts) > 2 else "video.mp4"
+        return parts[0], parts[1], filename
+    return None, None, None
+
+
 def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     """Membuat aplikasi web aiohttp untuk streaming video."""
     app = web.Application()
@@ -46,12 +62,22 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     async def handle_stream(request: web.Request) -> web.StreamResponse:
         """
         Endpoint streaming media langsung dari Telegram.
-        URL pattern: /stream/{channel_id}/{message_id}/{filename}
+        Mendukung rute:
+        - /stream/{channel_id}/{message_id}/{filename}
+        - /stream/{token}
         Mendukung HTTP Range Requests (206 Partial Content) untuk seek player dan parsing metadata atom.
         """
         channel_id_raw = request.match_info.get("channel_id")
         message_id_raw = request.match_info.get("message_id")
-        filename = request.match_info.get("filename", "video.mp4")
+        filename = request.match_info.get("filename")
+
+        if not channel_id_raw or not message_id_raw:
+            token = request.match_info.get("token", "")
+            channel_id_raw, message_id_raw, filename_parsed = parse_token(token)
+            if filename_parsed:
+                filename = filename_parsed
+
+        filename = filename or "video.mp4"
 
         try:
             channel_id = int(channel_id_raw)
@@ -59,7 +85,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         except (ValueError, TypeError):
             raise web.HTTPBadRequest(text="Parameter channel_id dan message_id harus berupa angka.")
 
-        # Ambil informasi file dari Telegram
+        # Ambil informasi file dari Telegram (menggunakan in-memory cache jika sudah pernah diakses)
         try:
             info = await telegram_streamer.get_media_info(channel_id, message_id)
         except PermissionError as e:
@@ -145,76 +171,89 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
 
         return response
 
-    async def handle_watch(request: web.Request) -> web.Response:
+    async def handle_embed(request: web.Request) -> web.Response:
         """
-        Endpoint OpenGraph Video Embed untuk Discord.
-        URL pattern: /watch/{channel_id}/{message_id}/{filename}
-        Menghasilkan meta tags video.other agar Discord menampilkan inline video player native.
+        Endpoint OpenGraph Video Shim untuk Discord.
+        Mendukung rute:
+        - /embed/{channel_id}/{message_id}/{filename}
+        - /embed/{token} (token: channel_id_message_id_filename)
+        - /watch/{channel_id}/{message_id}/{filename} (backward compatibility)
+
+        Menghasilkan HTML shim super ringan dengan meta tags OpenGraph & Twitter Card
+        agar Discordbot crawler langsung menampilkan playable video player tanpa timeout.
         """
         channel_id_raw = request.match_info.get("channel_id")
         message_id_raw = request.match_info.get("message_id")
+        filename_raw = request.match_info.get("filename")
+
+        if not channel_id_raw or not message_id_raw:
+            token = request.match_info.get("token", "")
+            channel_id_raw, message_id_raw, filename_parsed = parse_token(token)
+            if filename_parsed:
+                filename_raw = filename_parsed
 
         try:
             channel_id = int(channel_id_raw)
             message_id = int(message_id_raw)
             info = await telegram_streamer.get_media_info(channel_id, message_id)
         except Exception as e:
-            logger.warning(f"Watch endpoint gagal memuat media {channel_id_raw}/{message_id_raw}: {e}")
+            logger.warning(f"Embed endpoint gagal memuat media {channel_id_raw}/{message_id_raw}: {e}")
             raise web.HTTPNotFound(text="Video tidak ditemukan.")
 
         host = request.headers.get("Host", request.host)
         scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
-        clean_filename = info.filename
+        clean_filename = filename_raw or info.filename
         stream_url = f"{scheme}://{host}/stream/{channel_id}/{message_id}/{clean_filename}"
         thumb_url = f"{scheme}://{host}/thumb/{channel_id}/{message_id}.jpg"
         width = info.width or 1280
         height = info.height or 720
+        video_title = info.filename
+        video_description = f"Ukuran: {info.formatted_size}"
 
-        # PENTING: Jangan menyertakan twitter:player (iframe) karena Discord memblokir iframe
-        # untuk domain yang bukan whitelist (seperti YouTube).
-        # Gunakan format video.other + og:video:url + og:image yang memicu Discord client
-        # merender native HTML5 <video> player secara langsung.
         html = f"""<!DOCTYPE html>
-<html lang="id">
+<html>
 <head>
-    <meta charset="utf-8">
-    <title>{info.filename}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#5865F2">
+  <meta charset="utf-8">
+  <title>{video_title}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#5865F2">
 
-    <!-- OpenGraph Video Tags (Discord Native Embed Engine) -->
-    <meta property="og:type" content="video.other">
-    <meta property="og:title" content="{info.filename}">
-    <meta property="og:description" content="Ukuran: {info.formatted_size}">
-    <meta property="og:video" content="{stream_url}">
-    <meta property="og:video:url" content="{stream_url}">
-    <meta property="og:video:secure_url" content="{stream_url}">
-    <meta property="og:video:type" content="video/mp4">
-    <meta property="og:video:width" content="{width}">
-    <meta property="og:video:height" content="{height}">
+  <!-- OpenGraph Video Shim untuk Discord -->
+  <meta property="og:type" content="video.other">
+  <meta property="og:title" content="{video_title}">
+  <meta property="og:description" content="{video_description}">
+  <meta property="og:video:url" content="{stream_url}">
+  <meta property="og:video:secure_url" content="{stream_url}">
+  <meta property="og:video:type" content="video/mp4">
+  <meta property="og:video:width" content="{width}">
+  <meta property="og:video:height" content="{height}">
 
-    <!-- Video Poster Thumbnail -->
-    <meta property="og:image" content="{thumb_url}">
-    <meta property="og:image:url" content="{thumb_url}">
-    <meta property="og:image:secure_url" content="{thumb_url}">
-    <meta property="og:image:type" content="image/jpeg">
-    <meta property="og:image:width" content="{width}">
-    <meta property="og:image:height" content="{height}">
+  <!-- Video Poster Thumbnail (mencegah Discord crawl video besar untuk buat thumbnail) -->
+  <meta property="og:image" content="{thumb_url}">
+  <meta property="og:image:url" content="{thumb_url}">
+  <meta property="og:image:secure_url" content="{thumb_url}">
+  <meta property="og:image:type" content="image/jpeg">
+  <meta property="og:image:width" content="{width}">
+  <meta property="og:image:height" content="{height}">
 
-    <!-- Twitter Card (Player) -->
-    <meta name="twitter:card" content="player">
-    <meta name="twitter:title" content="{info.filename}">
-    <meta name="twitter:description" content="Ukuran: {info.formatted_size}">
-    <meta name="twitter:image" content="{thumb_url}">
+  <!-- Twitter Player Card -->
+  <meta name="twitter:card" content="player">
+  <meta name="twitter:title" content="{video_title}">
+  <meta name="twitter:description" content="{video_description}">
+  <meta name="twitter:image" content="{thumb_url}">
+  <meta name="twitter:player:stream" content="{stream_url}">
+  <meta name="twitter:player:stream:content_type" content="video/mp4">
+  <meta name="twitter:player:width" content="{width}">
+  <meta name="twitter:player:height" content="{height}">
 </head>
 <body style="margin:0; background:#0b0f19; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; color:#ffffff;">
-    <video controls autoplay playsinline style="max-width:96%; max-height:85vh; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
-        <source src="{stream_url}" type="video/mp4">
-        Browser Anda tidak mendukung HTML5 video playback.
-    </video>
-    <div style="margin-top:12px; font-size:14px; opacity:0.8;">
-        <b>{info.filename}</b> • {info.formatted_size}
-    </div>
+  <video controls autoplay playsinline style="max-width:96%; max-height:85vh; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
+    <source src="{stream_url}" type="video/mp4">
+    Browser Anda tidak mendukung HTML5 video playback.
+  </video>
+  <div style="margin-top:12px; font-size:14px; opacity:0.8;">
+    <b>{video_title}</b> • {video_description}
+  </div>
 </body>
 </html>"""
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "public, max-age=3600"})
@@ -254,7 +293,10 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     app.router.add_get("/", handle_health)
     app.router.add_get("/health", handle_health)
     app.router.add_route("*", "/stream/{channel_id}/{message_id}/{filename}", handle_stream)
-    app.router.add_get("/watch/{channel_id}/{message_id}/{filename}", handle_watch)
+    app.router.add_route("*", "/stream/{token}", handle_stream)
+    app.router.add_get("/embed/{channel_id}/{message_id}/{filename}", handle_embed)
+    app.router.add_get("/embed/{token}", handle_embed)
+    app.router.add_get("/watch/{channel_id}/{message_id}/{filename}", handle_embed)
     app.router.add_get("/thumb/{channel_id}/{message_id}.jpg", handle_thumb)
 
     return app

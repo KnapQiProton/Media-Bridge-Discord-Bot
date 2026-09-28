@@ -67,6 +67,7 @@ class TelegramStreamer:
         self.client: Optional[TelegramClient] = None
         self._is_started = False
         self.start_error: Optional[str] = None
+        self._media_info_cache: dict[str, TelegramMediaInfo] = {}
 
     async def start(self) -> None:
         """Inisialisasi dan jalankan Telethon client."""
@@ -123,12 +124,23 @@ class TelegramStreamer:
             err_msg = self.start_error or "Koneksi ke Telegram belum berhasil dijalankan."
             raise RuntimeError(f"Telegram client belum aktif ({err_msg}). Periksa TG_BOT_TOKEN atau kredensial di Railway.")
 
+        # Cek apakah media info sudah ada di in-memory cache (respons instan < 1ms untuk Discordbot crawler)
+        cache_key = f"{channel_identifier}:{message_id}"
+        if cache_key in self._media_info_cache:
+            logger.info(f"⚡ Cache hit media info untuk: {cache_key}")
+            return self._media_info_cache[cache_key]
+
         # Normalisasi channel ID jika berupa integer positif tanpa prefix -100
         peer = channel_identifier
         if isinstance(peer, int) and peer > 0:
             peer = int(f"-100{peer}")
         elif isinstance(peer, str) and peer.isdigit():
             peer = int(f"-100{peer}")
+
+        normalized_cache_key = f"{peer}:{message_id}"
+        if normalized_cache_key in self._media_info_cache:
+            logger.info(f"⚡ Cache hit media info (normalized) untuk: {normalized_cache_key}")
+            return self._media_info_cache[normalized_cache_key]
 
         try:
             entity = await self.client.get_entity(peer)
@@ -223,7 +235,7 @@ class TelegramStreamer:
         elif clean_filename.lower().endswith((".mkv", ".mov")):
             mime_type = "video/mp4"
 
-        return TelegramMediaInfo(
+        info = TelegramMediaInfo(
             message_id=message_id,
             channel_id=entity.id,
             media=message.media,
@@ -234,6 +246,14 @@ class TelegramStreamer:
             width=width,
             height=height
         )
+
+        # Simpan ke cache agar pemanggilan selanjutnya (dari Discordbot crawler) instan tanpa MTProto
+        self._media_info_cache[cache_key] = info
+        self._media_info_cache[f"{entity.id}:{message_id}"] = info
+        clean_cid = str(entity.id).replace("-100", "").replace("-", "")
+        self._media_info_cache[f"{clean_cid}:{message_id}"] = info
+
+        return info
 
     async def iter_stream_chunks(
         self,

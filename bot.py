@@ -113,26 +113,26 @@ class PlayerToggleView(discord.ui.View):
     2. 🎬 Langsung Embed Video (Direct MP4 URL yang memicu inline video player native Discord)
     Serta baris kedua untuk tombol link eksternal (Web Player & Download).
     """
-    def __init__(self, filename: str, formatted_size: str, stream_url: str, watch_url: str, initial_mode: str = "watch"):
+    def __init__(self, filename: str, formatted_size: str, stream_url: str, embed_url: str, initial_mode: str = "embed"):
         super().__init__(timeout=86400)  # Aktif selama 24 jam
         self.filename = filename
         self.formatted_size = formatted_size
         self.stream_url = stream_url
-        self.watch_url = watch_url
+        self.embed_url = embed_url
         self.current_mode = initial_mode
         self._build_buttons()
 
     def _build_buttons(self):
         self.clear_items()
 
-        # Tombol Mode 1: Player dalam Embed
-        btn_watch = discord.ui.Button(
+        # Tombol Mode 1: Player dalam Embed (OpenGraph Shim)
+        btn_embed = discord.ui.Button(
             label="🎴 Player dalam Embed",
-            style=discord.ButtonStyle.success if self.current_mode == "watch" else discord.ButtonStyle.secondary,
+            style=discord.ButtonStyle.success if self.current_mode == "embed" else discord.ButtonStyle.secondary,
             row=0
         )
-        btn_watch.callback = self.on_watch_clicked
-        self.add_item(btn_watch)
+        btn_embed.callback = self.on_embed_clicked
+        self.add_item(btn_embed)
 
         # Tombol Mode 2: Langsung Embed Video
         btn_direct = discord.ui.Button(
@@ -144,7 +144,7 @@ class PlayerToggleView(discord.ui.View):
         self.add_item(btn_direct)
 
         # Baris 1: Tombol Link Eksternal
-        self.add_item(discord.ui.Button(label="🌐 Web Player", url=self.watch_url, style=discord.ButtonStyle.link, row=1))
+        self.add_item(discord.ui.Button(label="🌐 Web Player", url=self.embed_url, style=discord.ButtonStyle.link, row=1))
         self.add_item(discord.ui.Button(label="⬇️ Download Langsung", url=self.stream_url, style=discord.ButtonStyle.link, row=1))
 
     def get_content(self) -> str:
@@ -157,19 +157,19 @@ class PlayerToggleView(discord.ui.View):
         else:
             import time
             cache_bust = int(time.time())
-            watch_url_bust = f"{self.watch_url}?v={cache_bust}"
+            embed_url_bust = f"{self.embed_url}?v={cache_bust}"
             return (
                 f"🎬 **{self.filename}** ({self.formatted_size})\n"
                 f"📌 *Mode: Player dalam Embed Card*\n\n"
-                f"{watch_url_bust}\n\n"
+                f"{embed_url_bust}\n\n"
                 f"*(Direct Stream: <{self.stream_url}>)*"
             )
 
-    async def on_watch_clicked(self, interaction: discord.Interaction):
-        if self.current_mode == "watch":
+    async def on_embed_clicked(self, interaction: discord.Interaction):
+        if self.current_mode == "embed":
             await interaction.response.defer()
             return
-        self.current_mode = "watch"
+        self.current_mode = "embed"
         self._build_buttons()
         await interaction.response.edit_message(content=self.get_content(), view=self)
 
@@ -200,15 +200,15 @@ async def on_message(message: discord.Message):
 
                 base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
                 cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
-                watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
+                embed_url = f"{base_url}/embed/{cid_str}/{info.message_id}/{info.filename}"
                 stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
 
                 view = PlayerToggleView(
                     filename=info.filename,
                     formatted_size=info.formatted_size,
                     stream_url=stream_url,
-                    watch_url=watch_url,
-                    initial_mode="watch"
+                    embed_url=embed_url,
+                    initial_mode="embed"
                 )
 
                 await message.reply(view.get_content(), view=view, mention_author=False)
@@ -279,10 +279,10 @@ async def televid_command(interaction: discord.Interaction, link: str):
         )
         return
 
-    # 4. Generate URL Streaming & OpenGraph Watch URL
+    # 4. Generate URL Streaming & OpenGraph Embed Shim URL
     base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
     cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
-    watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
+    embed_url = f"{base_url}/embed/{cid_str}/{info.message_id}/{info.filename}"
     stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
 
     # 5. Kirim respon interaktif dengan 2 opsi player (Player dalam Embed & Langsung Embed Video)
@@ -290,8 +290,8 @@ async def televid_command(interaction: discord.Interaction, link: str):
         filename=info.filename,
         formatted_size=info.formatted_size,
         stream_url=stream_url,
-        watch_url=watch_url,
-        initial_mode="watch"
+        embed_url=embed_url,
+        initial_mode="embed"
     )
 
     await interaction.followup.send(view.get_content(), view=view)
