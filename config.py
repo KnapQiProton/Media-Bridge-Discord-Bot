@@ -33,8 +33,16 @@ class Config:
     WEB_PORT: int = int(WEB_PORT_RAW) if WEB_PORT_RAW.isdigit() else 8080
 
     # 5. Public Streaming Base URL
-    # Contoh: https://bot.domainanda.com atau http://ip-server:8080
-    STREAM_BASE_URL: str = os.getenv("STREAM_BASE_URL", "").strip().rstrip("/")
+    # Otomatis mendeteksi domain publik Railway jika dideploy di Railway
+    _custom_url = os.getenv("STREAM_BASE_URL", "").strip().rstrip("/")
+    _railway_domain = (os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip() or os.getenv("RAILWAY_STATIC_URL", "").strip())
+    
+    if _custom_url:
+        STREAM_BASE_URL = _custom_url
+    elif _railway_domain:
+        STREAM_BASE_URL = f"https://{_railway_domain}" if not _railway_domain.startswith("http") else _railway_domain.rstrip("/")
+    else:
+        STREAM_BASE_URL = ""
 
     @classmethod
     def validate(cls) -> None:
