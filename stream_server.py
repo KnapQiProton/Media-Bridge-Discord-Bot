@@ -1,7 +1,8 @@
 """
 HTTP Streaming Server using aiohttp.
 Menyediakan endpoint video streaming berkecepatan tinggi dengan dukungan
-HTTP Range Requests (206 Partial Content) dan OpenGraph Video Shim Endpoint untuk Discord.
+HTTP Range Requests (206 Partial Content), OpenGraph Video Shim Endpoint,
+dan Poster Image Caching Endpoint untuk Discord.
 """
 
 import re
@@ -20,6 +21,10 @@ logger = logging.getLogger("televid.stream_server")
 # merespons Discordbot crawler dalam hitungan < 1ms TANPA perlu koneksi ke Telegram.
 EMBED_METADATA_STORE: Dict[str, dict] = {}
 
+# In-memory cache untuk poster thumbnail video dari Telegram.
+# Memastikan /poster/<token> merespons Discord crawler instan (< 1ms) tanpa I/O.
+POSTER_CACHE: Dict[str, bytes] = {}
+
 
 def register_embed_token(
     channel_id: int,
@@ -28,11 +33,12 @@ def register_embed_token(
     description: str,
     width: int,
     height: int,
-    filename: str
+    filename: str,
+    thumb_bytes: Optional[bytes] = None
 ) -> str:
     """
-    Mendaftarkan metadata video ke memori dan menghasilkan token unik.
-    Memungkinkan endpoint /embed/<token> merespons instan tanpa I/O Telegram.
+    Mendaftarkan metadata video dan thumbnail ke memori dan menghasilkan token unik.
+    Memungkinkan endpoint /embed/<token> dan /poster/<token> merespons instan (< 1ms).
     """
     cid_str = str(channel_id).replace("-100", "").replace("-", "")
     token = f"{cid_str}_{message_id}_{filename}"
@@ -46,21 +52,25 @@ def register_embed_token(
         "filename": filename
     }
     EMBED_METADATA_STORE[token] = meta
-    # Daftarkan juga alias token pendek tanpa filename: {cid}_{mid}
     short_token = f"{cid_str}_{message_id}"
     EMBED_METADATA_STORE[short_token] = meta
+
+    if thumb_bytes:
+        POSTER_CACHE[token] = thumb_bytes
+        POSTER_CACHE[short_token] = thumb_bytes
+
     return token
 
 
-# Fallback thumbnail 640x360 dark PNG untuk Discord og:image jika Telegram tidak memiliki thumb
-def _generate_fallback_png(w: int = 640, h: int = 360) -> bytes:
+# Fallback thumbnail 1280x720 dark PNG untuk Discord og:image jika Telegram tidak memiliki thumb
+def _generate_fallback_png(w: int = 1280, h: int = 720) -> bytes:
     raw_data = b"".join([b"\x00" + bytes([20, 24, 33]) * w for _ in range(h)])
     def chunk(tag: bytes, data: bytes) -> bytes:
         return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
     ihdr = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw_data)) + chunk(b'IEND', b'')
 
-FALLBACK_THUMB_PNG = _generate_fallback_png()
+FALLBACK_THUMB_PNG = _generate_fallback_png(1280, 720)
 
 # Regex untuk membaca HTTP Range header:
 # Mendukung standard range: bytes=0-1024, bytes=1024-, serta suffix range: bytes=-65536
@@ -222,8 +232,8 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         - /embed/{channel_id}/{message_id}/{filename}
         - /watch/{channel_id}/{message_id}/{filename} (backward compatibility)
 
-        Menghasilkan HTML shim super ringan (~10 baris) dengan meta tags OpenGraph & Twitter Card
-        dalam < 1ms (tanpa koneksi ke Telegram) agar Discordbot crawler langsung menampilkan playable embed.
+        Menghasilkan HTML shim super cepat dengan meta tags OpenGraph (og:image primary trigger)
+        dan fallback HTML5 video player untuk browser.
         """
         token = request.match_info.get("token")
         channel_id_raw = request.match_info.get("channel_id")
@@ -278,7 +288,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
         public_base_url = f"{scheme}://{host}"
         stream_url = f"{public_base_url}/stream/{effective_token}"
-        thumb_url = f"{public_base_url}/thumb/{channel_id}/{message_id}.jpg"
+        poster_url = f"{public_base_url}/poster/{effective_token}"
 
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -287,7 +297,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{video_title}</title>
 
-  <!-- OpenGraph tags (keep existing — DO NOT remove) -->
+  <!-- OpenGraph Video Tags -->
   <meta property="og:type" content="video.other">
   <meta property="og:title" content="{video_title}">
   <meta property="og:description" content="{video_description}">
@@ -296,12 +306,21 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
   <meta property="og:video:type" content="video/mp4">
   <meta property="og:video:width" content="{width}">
   <meta property="og:video:height" content="{height}">
-  <meta property="og:image" content="{thumb_url}">
-  <meta property="og:image:secure_url" content="{thumb_url}">
+
+  <!-- Primary Embed Trigger: og:image poster -->
+  <meta property="og:image" content="{poster_url}">
+  <meta property="og:image:secure_url" content="{poster_url}">
   <meta property="og:image:type" content="image/jpeg">
   <meta property="og:image:width" content="{width}">
   <meta property="og:image:height" content="{height}">
+  <meta property="og:image:alt" content="{video_title}">
+
+  <!-- Twitter fallback -->
   <meta name="twitter:card" content="player">
+  <meta name="twitter:title" content="{video_title}">
+  <meta name="twitter:description" content="{video_description}">
+  <meta name="twitter:image" content="{poster_url}">
+  <meta name="twitter:image:alt" content="{video_title}">
   <meta name="twitter:player:stream" content="{stream_url}">
   <meta name="twitter:player:stream:content_type" content="video/mp4">
 
@@ -370,7 +389,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         autoplay
         playsinline
         preload="metadata"
-        poster="{thumb_url}"
+        poster="{poster_url}"
       >
         <source src="{stream_url}" type="video/mp4">
         Your browser does not support HTML5 video.
@@ -390,31 +409,77 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
 </html>"""
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "public, max-age=3600"})
 
-    async def handle_thumb(request: web.Request) -> web.Response:
-        """Endpoint thumbnail media untuk Discord og:image."""
+    async def handle_poster(request: web.Request) -> web.Response:
+        """
+        Endpoint poster image untuk Discord og:image dan player poster.
+        Mendukung rute:
+        - /poster/{token}
+        - /poster/{channel_id}/{message_id}.jpg
+        - /thumb/{channel_id}/{message_id}.jpg
+        """
+        token = request.match_info.get("token")
         channel_id_raw = request.match_info.get("channel_id")
         message_id_raw = request.match_info.get("message_id")
-        try:
-            channel_id = int(channel_id_raw)
-            message_id = int(message_id_raw)
-            thumb_data = await telegram_streamer.get_thumbnail_bytes(channel_id, message_id)
-            if thumb_data:
-                content_type = "image/jpeg"
-                if thumb_data.startswith(b"\x89PNG"):
-                    content_type = "image/png"
-                elif thumb_data.startswith(b"GIF"):
-                    content_type = "image/gif"
-                elif thumb_data.startswith(b"RIFF") and b"WEBP" in thumb_data[:16]:
-                    content_type = "image/webp"
-                return web.Response(
-                    body=thumb_data,
-                    content_type=content_type,
-                    headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"}
-                )
-        except Exception as e:
-            logger.debug(f"Gagal mengambil thumbnail: {e}")
 
-        # Fallback: 640x360 placeholder PNG
+        thumb_data = None
+
+        # 1. Cek in-memory poster cache (Respons instan < 1ms)
+        if token and token in POSTER_CACHE:
+            thumb_data = POSTER_CACHE[token]
+        elif channel_id_raw and message_id_raw:
+            cid_clean = str(channel_id_raw).replace("-100", "").replace("-", "")
+            key = f"{cid_clean}_{message_id_raw}"
+            if key in POSTER_CACHE:
+                thumb_data = POSTER_CACHE[key]
+        elif token:
+            c_raw, m_raw, _ = parse_token(token)
+            if c_raw and m_raw:
+                key = f"{c_raw}_{m_raw}"
+                if key in POSTER_CACHE:
+                    thumb_data = POSTER_CACHE[key]
+
+        # 2. Jika belum ada di cache, unduh dari Telegram on-demand
+        if not thumb_data:
+            if not channel_id_raw or not message_id_raw:
+                if token in EMBED_METADATA_STORE:
+                    meta = EMBED_METADATA_STORE[token]
+                    channel_id_raw = str(meta["channel_id"])
+                    message_id_raw = str(meta["message_id"])
+                else:
+                    c_raw, m_raw, _ = parse_token(token or "")
+                    if c_raw and m_raw:
+                        channel_id_raw, message_id_raw = c_raw, m_raw
+
+            if channel_id_raw and message_id_raw:
+                try:
+                    cid = int(channel_id_raw)
+                    mid = int(message_id_raw)
+                    thumb_data = await telegram_streamer.get_thumbnail_bytes(cid, mid)
+                    if thumb_data:
+                        # Cache untuk request berikutnya
+                        if token:
+                            POSTER_CACHE[token] = thumb_data
+                        cid_clean = str(channel_id_raw).replace("-100", "").replace("-", "")
+                        POSTER_CACHE[f"{cid_clean}_{message_id_raw}"] = thumb_data
+                except Exception as e:
+                    logger.debug(f"Gagal mengambil thumbnail dari Telegram: {e}")
+
+        # 3. Kembalikan data thumbnail atau fallback placeholder
+        if thumb_data:
+            content_type = "image/jpeg"
+            if thumb_data.startswith(b"\x89PNG"):
+                content_type = "image/png"
+            elif thumb_data.startswith(b"GIF"):
+                content_type = "image/gif"
+            elif thumb_data.startswith(b"RIFF") and b"WEBP" in thumb_data[:16]:
+                content_type = "image/webp"
+            return web.Response(
+                body=thumb_data,
+                content_type=content_type,
+                headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"}
+            )
+
+        # Fallback: 1280x720 dark placeholder PNG
         return web.Response(
             body=FALLBACK_THUMB_PNG,
             content_type="image/png",
@@ -429,6 +494,8 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     app.router.add_get("/embed/{channel_id}/{message_id}/{filename}", handle_embed)
     app.router.add_get("/embed/{token}", handle_embed)
     app.router.add_get("/watch/{channel_id}/{message_id}/{filename}", handle_embed)
-    app.router.add_get("/thumb/{channel_id}/{message_id}.jpg", handle_thumb)
+    app.router.add_get("/poster/{channel_id}/{message_id}.jpg", handle_poster)
+    app.router.add_get("/poster/{token}", handle_poster)
+    app.router.add_get("/thumb/{channel_id}/{message_id}.jpg", handle_poster)
 
     return app

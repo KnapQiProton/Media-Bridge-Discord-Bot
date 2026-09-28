@@ -197,6 +197,13 @@ async def on_message(message: discord.Message):
                 parsed = parse_telegram_link(link)
                 channel_target = parsed.full_channel_id or parsed.raw_channel_id or parsed.username
                 info = await tg_streamer.get_media_info(channel_target, parsed.message_id)
+
+                thumb_bytes = None
+                try:
+                    thumb_bytes = await tg_streamer.get_thumbnail_bytes(channel_target, parsed.message_id)
+                except Exception as e:
+                    logger.debug(f"Gagal pra-unduh thumbnail: {e}")
+
                 base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
                 token = register_embed_token(
                     channel_id=info.channel_id,
@@ -205,7 +212,8 @@ async def on_message(message: discord.Message):
                     description=f"Ukuran: {info.formatted_size}",
                     width=info.width or 1280,
                     height=info.height or 720,
-                    filename=info.filename
+                    filename=info.filename,
+                    thumb_bytes=thumb_bytes
                 )
                 embed_url = f"{base_url}/embed/{token}"
                 stream_url = f"{base_url}/stream/{token}"
@@ -287,6 +295,12 @@ async def televid_command(interaction: discord.Interaction, link: str):
         return
 
     # 4. Generate URL Streaming & OpenGraph Embed Shim URL
+    thumb_bytes = None
+    try:
+        thumb_bytes = await tg_streamer.get_thumbnail_bytes(channel_target, parsed.message_id)
+    except Exception as e:
+        logger.debug(f"Gagal pra-unduh thumbnail: {e}")
+
     base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
     token = register_embed_token(
         channel_id=info.channel_id,
@@ -295,7 +309,8 @@ async def televid_command(interaction: discord.Interaction, link: str):
         description=f"Ukuran: {info.formatted_size}",
         width=info.width or 1280,
         height=info.height or 720,
-        filename=info.filename
+        filename=info.filename,
+        thumb_bytes=thumb_bytes
     )
     embed_url = f"{base_url}/embed/{token}"
     stream_url = f"{base_url}/stream/{token}"
