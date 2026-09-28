@@ -25,8 +25,10 @@ def _generate_fallback_png(w: int = 640, h: int = 360) -> bytes:
 
 FALLBACK_THUMB_PNG = _generate_fallback_png()
 
-# Regex untuk membaca HTTP Range header
-RE_RANGE = re.compile(r"^bytes=(\d+)-(\d+)?$")
+# Regex untuk membaca HTTP Range header:
+# Mendukung standard range: bytes=0-1024, bytes=1024-, serta suffix range: bytes=-65536
+# (Sangat penting untuk membaca atom moov MP4 di akhir berkas pada rekaman layar / video besar)
+RE_RANGE = re.compile(r"^bytes=(?:(\d+)-(\d+)?|-(\d+))$")
 
 
 def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
@@ -45,6 +47,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         """
         Endpoint streaming media langsung dari Telegram.
         URL pattern: /stream/{channel_id}/{message_id}/{filename}
+        Mendukung HTTP Range Requests (206 Partial Content) untuk seek player dan parsing metadata atom.
         """
         channel_id_raw = request.match_info.get("channel_id")
         message_id_raw = request.match_info.get("message_id")
@@ -71,7 +74,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         total_size = info.size
         range_header = request.headers.get("Range")
 
-        # Parsing header Range jika diminta oleh client (Discord/Browser)
+        # Parsing header Range jika diminta oleh client (Discord / Browser)
         start = 0
         end = total_size - 1
         is_range_request = False
@@ -79,10 +82,16 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         if range_header:
             match = RE_RANGE.match(range_header.strip())
             if match:
-                start_str, end_str = match.groups()
-                start = int(start_str)
-                if end_str:
-                    end = min(int(end_str), total_size - 1)
+                start_str, end_str, suffix_str = match.groups()
+                if suffix_str:
+                    # Suffix range (contoh: bytes=-65536) -> membaca N byte terakhir berkas
+                    suffix = int(suffix_str)
+                    start = max(0, total_size - suffix)
+                    end = total_size - 1
+                else:
+                    start = int(start_str)
+                    if end_str:
+                        end = min(int(end_str), total_size - 1)
                 is_range_request = True
 
         if start > end or start >= total_size:
@@ -113,23 +122,17 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
 
-        # Jika request berupa HEAD (biasa digunakan Discordbot scraper untuk cek metadata),
-        # cukup kirim header tanpa menulis body data!
+        # Jika request berupa HEAD (biasa digunakan Discordbot scraper untuk cek metadata file),
+        # cukup kirim header tanpa menulis body data
         if request.method == "HEAD":
             return response
 
         try:
-            # Jika request berasal dari crawler Discordbot tanpa Range, batasi transfer maksimal 1 MB
-            # agar Discordbot tidak timeout (3-5 detik) saat mencoba mendownload file video besar.
-            user_agent = request.headers.get("User-Agent", "")
-            is_discord_crawler = "Discordbot" in user_agent
-            stream_limit = min(content_length, 1024 * 1024) if (is_discord_crawler and not is_range_request) else content_length
-
             # Stream chunk langsung dari MTProto ke HTTP response tanpa simpan ke disk
             async for chunk in telegram_streamer.iter_stream_chunks(
                 media=info.media,
                 offset=start,
-                limit=stream_limit,
+                limit=content_length,
                 chunk_size=512 * 1024  # 512 KB per chunk
             ):
                 await response.write(chunk)
@@ -146,7 +149,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         """
         Endpoint OpenGraph Video Embed untuk Discord.
         URL pattern: /watch/{channel_id}/{message_id}/{filename}
-        Menghasilkan meta tags video.other agar Discord menampilkan inline video player.
+        Menghasilkan meta tags video.other agar Discord menampilkan inline video player native.
         """
         channel_id_raw = request.match_info.get("channel_id")
         message_id_raw = request.match_info.get("message_id")
@@ -162,12 +165,15 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         host = request.headers.get("Host", request.host)
         scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
         clean_filename = info.filename
-        watch_url = f"{scheme}://{host}/watch/{channel_id}/{message_id}/{clean_filename}"
         stream_url = f"{scheme}://{host}/stream/{channel_id}/{message_id}/{clean_filename}"
         thumb_url = f"{scheme}://{host}/thumb/{channel_id}/{message_id}.jpg"
         width = info.width or 1280
         height = info.height or 720
 
+        # PENTING: Jangan menyertakan twitter:player (iframe) karena Discord memblokir iframe
+        # untuk domain yang bukan whitelist (seperti YouTube).
+        # Gunakan format video.other + og:video:url + og:image yang memicu Discord client
+        # merender native HTML5 <video> player secara langsung.
         html = f"""<!DOCTYPE html>
 <html lang="id">
 <head>
@@ -176,14 +182,10 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#5865F2">
 
-    <!-- OpenGraph Video Meta Tags untuk Discord & Telegram -->
-    <meta property="og:site_name" content="MediaBridge Televid">
+    <!-- OpenGraph Video Tags (Discord Native Embed Engine) -->
+    <meta property="og:type" content="video.other">
     <meta property="og:title" content="{info.filename}">
     <meta property="og:description" content="Ukuran: {info.formatted_size}">
-    <meta property="og:type" content="video.other">
-    <meta property="og:url" content="{watch_url}">
-
-    <!-- Video Direct Stream -->
     <meta property="og:video" content="{stream_url}">
     <meta property="og:video:url" content="{stream_url}">
     <meta property="og:video:secure_url" content="{stream_url}">
@@ -191,7 +193,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     <meta property="og:video:width" content="{width}">
     <meta property="og:video:height" content="{height}">
 
-    <!-- Poster Thumbnail -->
+    <!-- Video Poster Thumbnail -->
     <meta property="og:image" content="{thumb_url}">
     <meta property="og:image:url" content="{thumb_url}">
     <meta property="og:image:secure_url" content="{thumb_url}">
@@ -199,16 +201,11 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     <meta property="og:image:width" content="{width}">
     <meta property="og:image:height" content="{height}">
 
-    <!-- Twitter Player Card -->
+    <!-- Twitter Card (Player) -->
     <meta name="twitter:card" content="player">
     <meta name="twitter:title" content="{info.filename}">
     <meta name="twitter:description" content="Ukuran: {info.formatted_size}">
     <meta name="twitter:image" content="{thumb_url}">
-    <meta name="twitter:player" content="{watch_url}">
-    <meta name="twitter:player:width" content="{width}">
-    <meta name="twitter:player:height" content="{height}">
-    <meta name="twitter:player:stream" content="{stream_url}">
-    <meta name="twitter:player:stream:content_type" content="video/mp4">
 </head>
 <body style="margin:0; background:#0b0f19; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; color:#ffffff;">
     <video controls autoplay playsinline style="max-width:96%; max-height:85vh; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
