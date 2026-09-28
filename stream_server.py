@@ -406,7 +406,11 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
   </div>
 </body>
 </html>"""
-        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "public, max-age=3600"})
+        return web.Response(
+            text=html,
+            content_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+        )
 
     async def handle_poster(request: web.Request) -> web.Response:
         """
