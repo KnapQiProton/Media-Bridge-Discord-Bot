@@ -3,3 +3,4 @@ telethon>=1.34.0
 aiohttp>=3.9.3
 python-dotenv>=1.0.1
 cryptg>=0.4.0
+pycloudflared>=0.2.0

@@ -46,7 +46,24 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, Config.WEB_HOST, Config.WEB_PORT)
     await site.start()
-    logger.info(f"🌐 HTTP Stream Server berjalan di http://{Config.WEB_HOST}:{Config.WEB_PORT}")
+    logger.info(f"🌐 HTTP Stream Server berjalan lokal di port {Config.WEB_PORT}")
+
+    # Otomatis buat link HTTPS publik via Cloudflare jika STREAM_BASE_URL belum diisi
+    if not Config.STREAM_BASE_URL:
+        try:
+            logger.info("STREAM_BASE_URL belum diisi, mencoba membuat link HTTPS gratis otomatis via Cloudflare Tunnel...")
+            from pycloudflared import try_cloudflare
+            tunnel = try_cloudflare(port=Config.WEB_PORT)
+            Config.STREAM_BASE_URL = tunnel.tunnel.rstrip("/")
+            logger.info(f"🎉 Berhasil membuat URL Publik HTTPS Otomatis: {Config.STREAM_BASE_URL}")
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Tidak dapat membuat auto-tunnel ({e}). "
+                f"Silakan isi STREAM_BASE_URL secara manual di .env."
+            )
+            Config.STREAM_BASE_URL = f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
+    else:
+        logger.info(f"🔗 URL Publik Streaming menggunakan: {Config.STREAM_BASE_URL}")
 
 
 @bot.event
