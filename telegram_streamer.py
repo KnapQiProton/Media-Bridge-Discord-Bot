@@ -126,13 +126,22 @@ class TelegramStreamer:
         except (ChannelPrivateError, ChatAdminRequiredError):
             raise PermissionError(
                 "Bot Telegram belum ditambahkan ke channel ini atau belum dijadikan Admin.\n"
-                "Silakan undang bot Telegram Anda ke channel tersebut."
+                "👉 Silakan buka Channel Telegram Anda -> Settings -> Administrators -> Tambahkan bot Telegram Anda sebagai Admin."
             )
         except ChannelInvalidError:
-            raise PermissionError("Channel Telegram tidak valid atau tidak dapat diakses.")
+            raise PermissionError("Channel Telegram tidak valid atau tidak dapat diakses oleh bot.")
+        except ValueError as e:
+            if "Could not find the input entity" in str(e):
+                raise PermissionError(
+                    "Bot Telegram belum mengenali channel ini di database-nya.\n"
+                    "👉 **Cara mengatasi:**\n"
+                    "1. Pastikan bot Telegram Anda sudah dimasukkan ke channel ini sebagai **Admin**.\n"
+                    "2. Kirim pesan sembarang (misal ketik: `tes`) di dalam channel tersebut agar bot bisa mendeteksi channel-nya."
+                )
+            raise PermissionError(f"Format channel tidak valid: {e}")
         except Exception as e:
             logger.error(f"Gagal mengambil entity channel '{peer}': {e}")
-            raise PermissionError(f"Gagal mengakses channel Telegram: {e}")
+            raise PermissionError(f"Gagal mengakses channel Telegram ({type(e).__name__}): {e}")
 
         # Ambil pesan berdasarkan message_id
         try:
