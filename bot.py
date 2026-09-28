@@ -6,49 +6,18 @@ Slash Commands:
 """
 
 import sys
+import re
 import asyncio
 import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
-import re
-import urllib.parse
-import aiohttp
 from aiohttp import web
 
 from config import Config
 from telegram_parser import parse_telegram_link
 from telegram_streamer import TelegramStreamer
 from stream_server import create_stream_app
-
-
-async def get_autocompressor_embed_url(stream_url: str, thumb_url: str, width: int, height: int) -> str:
-    """
-    Membuat Embed URL resmi autocompressor.net untuk Discord video embed.
-    Mendukung Shortlink (misal https://autocompressor.net/av1?s=...)
-    dengan fallback otomatis ke parameter URL lengkap jika request timeout.
-    """
-    w = width or 1280
-    h = height or 720
-
-    # URL lengkap bawaan autocompressor.net (selalu valid tanpa bergantung API)
-    encoded_v = urllib.parse.quote(stream_url, safe="")
-    encoded_i = urllib.parse.quote(thumb_url, safe="")
-    full_url = f"https://autocompressor.net/av1?v={encoded_v}&i={encoded_i}&w={w}&h={h}"
-
-    # Coba generate clean shortlink via API autocompressor.net (misal: ?s=jhyCfmpL)
-    try:
-        payload = {"v": stream_url, "i": thumb_url, "w": str(w), "h": str(h)}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.5)) as session:
-            async with session.post("https://autocompressor.net/av1/mkshortlink", json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("success") and data.get("shortLink"):
-                        return f"https://autocompressor.net/av1?s={data['shortLink']}"
-    except Exception as e:
-        logger.debug(f"Autocompressor mkshortlink fallback ke URL lengkap: {e}")
-
-    return full_url
 
 # Setup logging
 logging.basicConfig(
@@ -155,16 +124,13 @@ async def on_message(message: discord.Message):
 
                 base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
                 cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
+                import time
+                watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}?v={int(time.time())}"
                 stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
-                thumb_url = f"{base_url}/thumb/{cid_str}/{info.message_id}.jpg"
-                watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
-
-                # Generate Embed URL via autocompressor.net
-                embed_url = await get_autocompressor_embed_url(stream_url, thumb_url, info.width, info.height)
 
                 response_text = (
                     f"🎬 **{info.filename}** ({info.formatted_size})\n\n"
-                    f"{embed_url}\n\n"
+                    f"{watch_url}\n\n"
                     f"*(Direct Stream: <{stream_url}>)*"
                 )
 
@@ -243,19 +209,17 @@ async def televid_command(interaction: discord.Interaction, link: str):
     # 4. Generate URL Streaming & OpenGraph Watch URL
     base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
     cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
+    import time
+    cache_bust = int(time.time())
+    watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}?v={cache_bust}"
     stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
-    thumb_url = f"{base_url}/thumb/{cid_str}/{info.message_id}.jpg"
-    watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
-
-    # Generate Embed URL resmi dari autocompressor.net
-    embed_url = await get_autocompressor_embed_url(stream_url, thumb_url, info.width, info.height)
 
     # 5. Kirim respon ke Discord
-    # Meletakkan embed_url pada baris tersendiri memicu Discord scraper untuk membaca
+    # Meletakkan watch_url pada baris tersendiri memicu Discord scraper untuk membaca
     # OpenGraph video tags dan menampilkan inline playable HTML5 video player secara langsung di dalam chat.
     response_text = (
         f"🎬 **{info.filename}** ({info.formatted_size})\n\n"
-        f"{embed_url}\n\n"
+        f"{watch_url}\n\n"
         f"*(Direct Stream: <{stream_url}>)*"
     )
 
