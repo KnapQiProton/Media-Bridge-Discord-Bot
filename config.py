@@ -10,37 +10,44 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def _clean(val: Optional[str], default: str = "") -> str:
+    """Bersihkan nilai env dari whitespace dan tanda petik ganda/tunggal."""
+    if not val:
+        return default
+    return val.strip().strip("'\"").strip()
+
+
 class Config:
     """Konfigurasi utama Televid Bot (Direct Telegram Streamer)."""
 
     # 1. Discord Bot Credentials
-    DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN", "").strip()
-    DISCORD_GUILD_ID_RAW: str = os.getenv("DISCORD_GUILD_ID", "").strip()
+    DISCORD_TOKEN: str = _clean(os.getenv("DISCORD_TOKEN"))
+    DISCORD_GUILD_ID_RAW: str = _clean(os.getenv("DISCORD_GUILD_ID"))
     DISCORD_GUILD_ID: Optional[int] = int(DISCORD_GUILD_ID_RAW) if DISCORD_GUILD_ID_RAW.isdigit() else None
 
     # 2. Telegram API Credentials (dari my.telegram.org)
-    TG_API_ID_RAW: str = os.getenv("TG_API_ID", "").strip()
+    TG_API_ID_RAW: str = _clean(os.getenv("TG_API_ID"))
     TG_API_ID: int = int(TG_API_ID_RAW) if TG_API_ID_RAW.isdigit() else 0
-    TG_API_HASH: str = os.getenv("TG_API_HASH", "").strip()
+    TG_API_HASH: str = _clean(os.getenv("TG_API_HASH"))
 
     # 3. Telegram Bot Token (dari @BotFather) atau User Session String
-    TG_BOT_TOKEN: str = os.getenv("TG_BOT_TOKEN", "").strip()
-    TG_SESSION_STRING: str = os.getenv("TG_SESSION_STRING", "").strip()
+    TG_BOT_TOKEN: str = _clean(os.getenv("TG_BOT_TOKEN"))
+    TG_SESSION_STRING: str = _clean(os.getenv("TG_SESSION_STRING"))
 
     # 4. Web Stream Server Configuration
-    WEB_HOST: str = os.getenv("WEB_HOST", "0.0.0.0").strip()
-    WEB_PORT_RAW: str = os.getenv("WEB_PORT", os.getenv("PORT", "8080")).strip()
+    WEB_HOST: str = _clean(os.getenv("WEB_HOST"), "0.0.0.0")
+    WEB_PORT_RAW: str = _clean(os.getenv("WEB_PORT") or os.getenv("PORT"), "8080")
     WEB_PORT: int = int(WEB_PORT_RAW) if WEB_PORT_RAW.isdigit() else 8080
 
     # 5. Public Streaming Base URL
     # Otomatis mendeteksi domain publik Railway jika dideploy di Railway
-    _custom_url = os.getenv("STREAM_BASE_URL", "").strip().rstrip("/")
-    _railway_domain = (os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip() or os.getenv("RAILWAY_STATIC_URL", "").strip())
-    
+    _custom_url = _clean(os.getenv("STREAM_BASE_URL")).rstrip("/")
+    _railway_domain = _clean(os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("RAILWAY_STATIC_URL")).rstrip("/")
+
     if _custom_url:
         STREAM_BASE_URL = _custom_url
     elif _railway_domain:
-        STREAM_BASE_URL = f"https://{_railway_domain}" if not _railway_domain.startswith("http") else _railway_domain.rstrip("/")
+        STREAM_BASE_URL = f"https://{_railway_domain}" if not _railway_domain.startswith("http") else _railway_domain
     else:
         STREAM_BASE_URL = ""
 

@@ -66,34 +66,42 @@ class TelegramStreamer:
     def __init__(self):
         self.client: Optional[TelegramClient] = None
         self._is_started = False
+        self.start_error: Optional[str] = None
 
     async def start(self) -> None:
         """Inisialisasi dan jalankan Telethon client."""
         if self._is_started:
             return
 
-        logger.info("Menghubungkan ke server Telegram (MTProto)...")
+        self.start_error = None
+        logger.info(f"Menghubungkan ke server Telegram (MTProto)... API_ID={Config.TG_API_ID}")
 
-        if Config.TG_SESSION_STRING:
-            # Login sebagai user session
-            self.client = TelegramClient(
-                StringSession(Config.TG_SESSION_STRING),
-                Config.TG_API_ID,
-                Config.TG_API_HASH
-            )
-            await self.client.start()
-        else:
-            # Login sebagai Telegram Bot (@BotFather)
-            self.client = TelegramClient(
-                "televid_streamer_bot",
-                Config.TG_API_ID,
-                Config.TG_API_HASH
-            )
-            await self.client.start(bot_token=Config.TG_BOT_TOKEN)
+        try:
+            if Config.TG_SESSION_STRING:
+                # Login sebagai user session
+                self.client = TelegramClient(
+                    StringSession(Config.TG_SESSION_STRING),
+                    Config.TG_API_ID,
+                    Config.TG_API_HASH
+                )
+                await self.client.start()
+            else:
+                # Login sebagai Telegram Bot (@BotFather)
+                self.client = TelegramClient(
+                    "televid_streamer_bot",
+                    Config.TG_API_ID,
+                    Config.TG_API_HASH
+                )
+                await self.client.start(bot_token=Config.TG_BOT_TOKEN)
 
-        me = await self.client.get_me()
-        self._is_started = True
-        logger.info(f"✅ Terhubung ke Telegram sebagai: @{getattr(me, 'username', 'User')} (ID: {me.id})")
+            me = await self.client.get_me()
+            self._is_started = True
+            logger.info(f"✅ Terhubung ke Telegram sebagai: @{getattr(me, 'username', 'User')} (ID: {me.id})")
+        except Exception as e:
+            self._is_started = False
+            self.start_error = f"{type(e).__name__}: {e}"
+            logger.exception(f"❌ Gagal menghubungkan ke Telegram: {e}")
+            raise
 
     async def stop(self) -> None:
         """Tutup koneksi Telethon client."""
@@ -112,7 +120,8 @@ class TelegramStreamer:
             FileNotFoundError: Jika pesan tidak ditemukan.
         """
         if not self._is_started or not self.client:
-            raise RuntimeError("Telegram client belum dijalankan.")
+            err_msg = self.start_error or "Koneksi ke Telegram belum berhasil dijalankan."
+            raise RuntimeError(f"Telegram client belum aktif ({err_msg}). Periksa TG_BOT_TOKEN atau kredensial di Railway.")
 
         # Normalisasi channel ID jika berupa integer positif tanpa prefix -100
         peer = channel_identifier

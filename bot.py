@@ -151,10 +151,16 @@ async def televid_command(interaction: discord.Interaction, link: str):
             ephemeral=True
         )
         return
+    except RuntimeError as e:
+        await interaction.followup.send(
+            f"❌ **Koneksi Telegram Gagal:**\n{e}",
+            ephemeral=True
+        )
+        return
     except Exception as e:
         logger.exception(f"Error saat memproses /televid: {e}")
         await interaction.followup.send(
-            "❌ Terjadi kesalahan internal saat mengambil media Telegram.",
+            f"❌ **Terjadi Kesalahan ({type(e).__name__}):**\n`{e}`",
             ephemeral=True
         )
         return
