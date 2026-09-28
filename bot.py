@@ -106,6 +106,82 @@ async def on_ready():
     logger.info("🚀 Televid Streamer Bot siap digunakan!")
 
 
+class PlayerToggleView(discord.ui.View):
+    """
+    View interaktif dengan 2 tombol pengalih mode:
+    1. 🎴 Player dalam Embed (Tampilan OpenGraph card dengan player di dalam kotak embed)
+    2. 🎬 Langsung Embed Video (Direct MP4 URL yang memicu inline video player native Discord)
+    Serta baris kedua untuk tombol link eksternal (Web Player & Download).
+    """
+    def __init__(self, filename: str, formatted_size: str, stream_url: str, watch_url: str, initial_mode: str = "watch"):
+        super().__init__(timeout=86400)  # Aktif selama 24 jam
+        self.filename = filename
+        self.formatted_size = formatted_size
+        self.stream_url = stream_url
+        self.watch_url = watch_url
+        self.current_mode = initial_mode
+        self._build_buttons()
+
+    def _build_buttons(self):
+        self.clear_items()
+
+        # Tombol Mode 1: Player dalam Embed
+        btn_watch = discord.ui.Button(
+            label="🎴 Player dalam Embed",
+            style=discord.ButtonStyle.success if self.current_mode == "watch" else discord.ButtonStyle.secondary,
+            row=0
+        )
+        btn_watch.callback = self.on_watch_clicked
+        self.add_item(btn_watch)
+
+        # Tombol Mode 2: Langsung Embed Video
+        btn_direct = discord.ui.Button(
+            label="🎬 Langsung Embed Video",
+            style=discord.ButtonStyle.success if self.current_mode == "direct" else discord.ButtonStyle.secondary,
+            row=0
+        )
+        btn_direct.callback = self.on_direct_clicked
+        self.add_item(btn_direct)
+
+        # Baris 1: Tombol Link Eksternal
+        self.add_item(discord.ui.Button(label="🌐 Web Player", url=self.watch_url, style=discord.ButtonStyle.link, row=1))
+        self.add_item(discord.ui.Button(label="⬇️ Download Langsung", url=self.stream_url, style=discord.ButtonStyle.link, row=1))
+
+    def get_content(self) -> str:
+        if self.current_mode == "direct":
+            return (
+                f"🎬 **{self.filename}** ({self.formatted_size})\n"
+                f"📌 *Mode: Langsung Embed Video (Direct MP4)*\n\n"
+                f"{self.stream_url}"
+            )
+        else:
+            import time
+            cache_bust = int(time.time())
+            watch_url_bust = f"{self.watch_url}?v={cache_bust}"
+            return (
+                f"🎬 **{self.filename}** ({self.formatted_size})\n"
+                f"📌 *Mode: Player dalam Embed Card*\n\n"
+                f"{watch_url_bust}\n\n"
+                f"*(Direct Stream: <{self.stream_url}>)*"
+            )
+
+    async def on_watch_clicked(self, interaction: discord.Interaction):
+        if self.current_mode == "watch":
+            await interaction.response.defer()
+            return
+        self.current_mode = "watch"
+        self._build_buttons()
+        await interaction.response.edit_message(content=self.get_content(), view=self)
+
+    async def on_direct_clicked(self, interaction: discord.Interaction):
+        if self.current_mode == "direct":
+            await interaction.response.defer()
+            return
+        self.current_mode = "direct"
+        self._build_buttons()
+        await interaction.response.edit_message(content=self.get_content(), view=self)
+
+
 @bot.event
 async def on_message(message: discord.Message):
     """Mendeteksi otomatis jika user mem-paste link Telegram langsung ke chat."""
@@ -124,21 +200,18 @@ async def on_message(message: discord.Message):
 
                 base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
                 cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
-                import time
-                watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}?v={int(time.time())}"
+                watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
                 stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
 
-                response_text = (
-                    f"🎬 **{info.filename}** ({info.formatted_size})\n\n"
-                    f"{watch_url}\n\n"
-                    f"*(Direct Stream: <{stream_url}>)*"
+                view = PlayerToggleView(
+                    filename=info.filename,
+                    formatted_size=info.formatted_size,
+                    stream_url=stream_url,
+                    watch_url=watch_url,
+                    initial_mode="watch"
                 )
 
-                view = discord.ui.View()
-                view.add_item(discord.ui.Button(label="🌐 Web Player", url=watch_url, style=discord.ButtonStyle.link))
-                view.add_item(discord.ui.Button(label="⬇️ Download Langsung", url=stream_url, style=discord.ButtonStyle.link))
-
-                await message.reply(response_text, view=view, mention_author=False)
+                await message.reply(view.get_content(), view=view, mention_author=False)
                 logger.info(f"✅ Auto-detect link Telegram berhasil untuk pesan ID {info.message_id}")
             except Exception as e:
                 logger.debug(f"on_message lewati link '{link}': {e}")
@@ -209,25 +282,19 @@ async def televid_command(interaction: discord.Interaction, link: str):
     # 4. Generate URL Streaming & OpenGraph Watch URL
     base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
     cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
-    import time
-    cache_bust = int(time.time())
-    watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}?v={cache_bust}"
+    watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
     stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
 
-    # 5. Kirim respon ke Discord
-    # Meletakkan watch_url pada baris tersendiri memicu Discord scraper untuk membaca
-    # OpenGraph video tags dan menampilkan inline playable HTML5 video player secara langsung di dalam chat.
-    response_text = (
-        f"🎬 **{info.filename}** ({info.formatted_size})\n\n"
-        f"{watch_url}\n\n"
-        f"*(Direct Stream: <{stream_url}>)*"
+    # 5. Kirim respon interaktif dengan 2 opsi player (Player dalam Embed & Langsung Embed Video)
+    view = PlayerToggleView(
+        filename=info.filename,
+        formatted_size=info.formatted_size,
+        stream_url=stream_url,
+        watch_url=watch_url,
+        initial_mode="watch"
     )
 
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="🌐 Web Player", url=watch_url, style=discord.ButtonStyle.link))
-    view.add_item(discord.ui.Button(label="⬇️ Download Langsung", url=stream_url, style=discord.ButtonStyle.link))
-
-    await interaction.followup.send(response_text, view=view)
+    await interaction.followup.send(view.get_content(), view=view)
     logger.info(f"✅ Berhasil memproses televid untuk file '{info.filename}' (Ukuran: {info.formatted_size})")
 
 
