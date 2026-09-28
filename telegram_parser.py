@@ -1,6 +1,7 @@
 """
 Telegram link parser module.
-Mengekstrak channel_id, username, dan message_id dari link Telegram.
+Mengekstrak channel_id, username, topic_id, dan message_id dari link Telegram.
+Mendukung format channel biasa dan channel dengan Forum / Topics.
 """
 
 import re
@@ -8,21 +9,26 @@ from typing import NamedTuple, Optional
 
 class TelegramParsedLink(NamedTuple):
     message_id: int
-    raw_channel_id: Optional[int] = None      # Contoh: 4483946044
-    full_channel_id: Optional[int] = None     # Contoh: -1004483946044
+    raw_channel_id: Optional[int] = None      # Contoh: 4249874818
+    full_channel_id: Optional[int] = None     # Contoh: -1004249874818
     username: Optional[str] = None           # Contoh: 'my_channel'
+    topic_id: Optional[int] = None           # Contoh: 10
     is_private_channel: bool = False
 
 # Regex patterns untuk berbagai format link Telegram
-# 1. Private channel / supergroup: https://t.me/c/4483946044/2 atau t.me/c/4483946044/2?single
+# 1. Private channel / supergroup / forum topic:
+#    - https://t.me/c/4249874818/10/12  (dengan Forum Topic)
+#    - https://t.me/c/4483946044/12     (tanpa Forum Topic)
 RE_PRIVATE_CHANNEL = re.compile(
-    r"(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/c\/(\d+)\/(\d+)(?:\?[^\s]*)?",
+    r"(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/c\/(\d+)(?:\/(\d+))?\/(\d+)(?:\?[^\s]*)?",
     re.IGNORECASE
 )
 
-# 2. Public channel: https://t.me/channel_name/1234 atau telegram.me/channel_name/1234
+# 2. Public channel / forum topic:
+#    - https://t.me/channel_name/10/12  (dengan Topic)
+#    - https://t.me/channel_name/12     (tanpa Topic)
 RE_PUBLIC_CHANNEL = re.compile(
-    r"(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})\/(\d+)(?:\?[^\s]*)?",
+    r"(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,})(?:\/(\d+))?\/(\d+)(?:\?[^\s]*)?",
     re.IGNORECASE
 )
 
@@ -36,18 +42,20 @@ RE_TG_PROTOCOL = re.compile(
 def parse_telegram_link(link: str) -> TelegramParsedLink:
     """
     Parse link Telegram untuk mendapatkan message_id dan channel_id / username.
+    Mendukung channel biasa maupun supergroup dengan forum topic.
     
     Raises:
         ValueError: Jika format link tidak valid atau bukan link pesan Telegram.
     """
     clean_link = link.strip()
 
-    # Cek format 1: Private channel (t.me/c/<channel_id>/<message_id>)
+    # Cek format 1: Private channel (bisa dengan topic_id atau langsung message_id)
     match_private = RE_PRIVATE_CHANNEL.search(clean_link)
     if match_private:
-        raw_cid_str, msg_id_str = match_private.groups()
+        raw_cid_str, topic_id_str, msg_id_str = match_private.groups()
         raw_cid = int(raw_cid_str)
         msg_id = int(msg_id_str)
+        topic_id = int(topic_id_str) if topic_id_str else None
         
         # Konversi ke standard Telegram -100 prefix untuk supergroup/channel
         full_cid = int(f"-100{raw_cid}")
@@ -56,19 +64,21 @@ def parse_telegram_link(link: str) -> TelegramParsedLink:
             message_id=msg_id,
             raw_channel_id=raw_cid,
             full_channel_id=full_cid,
+            topic_id=topic_id,
             is_private_channel=True
         )
 
-    # Cek format 2: Public channel (t.me/<username>/<message_id>)
-    # Catatan: hindari false positive dengan path seperti t.me/c/... atau t.me/joinchat/...
+    # Cek format 2: Public channel (bisa dengan topic_id atau langsung message_id)
     match_public = RE_PUBLIC_CHANNEL.search(clean_link)
     if match_public:
-        username, msg_id_str = match_public.groups()
+        username, topic_id_str, msg_id_str = match_public.groups()
         if username.lower() not in ("c", "joinchat", "addstickers", "invoice", "share"):
             msg_id = int(msg_id_str)
+            topic_id = int(topic_id_str) if topic_id_str else None
             return TelegramParsedLink(
                 message_id=msg_id,
                 username=username,
+                topic_id=topic_id,
                 is_private_channel=False
             )
 
