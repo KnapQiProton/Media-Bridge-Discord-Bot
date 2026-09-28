@@ -281,8 +281,13 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         thumb_url = f"{public_base_url}/thumb/{channel_id}/{message_id}.jpg"
 
         html = f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{video_title}</title>
+
+  <!-- OpenGraph tags (keep existing — DO NOT remove) -->
   <meta property="og:type" content="video.other">
   <meta property="og:title" content="{video_title}">
   <meta property="og:description" content="{video_description}">
@@ -299,8 +304,89 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
   <meta name="twitter:card" content="player">
   <meta name="twitter:player:stream" content="{stream_url}">
   <meta name="twitter:player:stream:content_type" content="video/mp4">
+
+  <style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    html, body {{
+      width: 100%;
+      min-height: 100vh;
+      background: #0d0d0d;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    .container {{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }}
+    .player-wrap {{
+      width: 100%;
+      max-width: 1080px;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    }}
+    video {{
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #000;
+    }}
+    .meta {{
+      margin-top: 16px;
+      max-width: 1080px;
+      width: 100%;
+      padding: 0 4px;
+    }}
+    .meta h1 {{
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      line-height: 1.3;
+      word-break: break-word;
+    }}
+    .meta p {{
+      font-size: 13px;
+      color: #a0a0a0;
+      line-height: 1.5;
+    }}
+    .brand {{
+      margin-top: 24px;
+      font-size: 12px;
+      color: #6b6b6b;
+      text-align: center;
+    }}
+  </style>
 </head>
-<body></body>
+<body>
+  <div class="container">
+    <div class="player-wrap">
+      <video
+        controls
+        autoplay
+        playsinline
+        preload="metadata"
+        poster="{thumb_url}"
+      >
+        <source src="{stream_url}" type="video/mp4">
+        Your browser does not support HTML5 video.
+      </video>
+    </div>
+
+    <div class="meta">
+      <h1>{video_title}</h1>
+      <p>{video_description}</p>
+    </div>
+
+    <div class="brand">
+      ⚡ Powered by Media Bridge Bot
+    </div>
+  </div>
+</body>
 </html>"""
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "public, max-age=3600"})
 
