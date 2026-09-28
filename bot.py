@@ -165,22 +165,25 @@ async def televid_command(interaction: discord.Interaction, link: str):
         )
         return
 
-    # 4. Generate URL Streaming
+    # 4. Generate URL Streaming & OpenGraph Watch URL
     base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
-    # Gunakan channel_id positif bersih di URL
     cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
     stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
+    watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
 
     # 5. Kirim respon ke Discord
+    # Mengirim watch_url agar Discord scraper membaca OpenGraph video tags dan menampilkan inline player
     response_text = (
         f"🎬 **Video siap diputar!**\n"
         f"**Nama:** `{info.filename}`\n"
         f"**Ukuran:** `{info.formatted_size}`\n"
-        f"**URL:** {stream_url}"
+        f"**URL:** {watch_url}\n"
+        f"*(Direct Stream: <{stream_url}>)*"
     )
 
     view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Tonton / Download", url=stream_url, style=discord.ButtonStyle.link))
+    view.add_item(discord.ui.Button(label="Tonton di Browser", url=watch_url, style=discord.ButtonStyle.link))
+    view.add_item(discord.ui.Button(label="Direct Download", url=stream_url, style=discord.ButtonStyle.secondary))
 
     await interaction.followup.send(response_text, view=view)
     logger.info(f"✅ Berhasil memproses televid untuk file '{info.filename}' (Ukuran: {info.formatted_size})")

@@ -214,6 +214,15 @@ class TelegramStreamer:
         if not clean_filename.endswith((".mp4", ".webm", ".mkv")):
             clean_filename += ".mp4"
 
+        # Pastikan mime_type adalah video jika file berakhiran video
+        # (Sangat penting karena file TeleDrive seringkali di-upload sebagai Document 'application/octet-stream')
+        if clean_filename.lower().endswith(".mp4") or mime_type == "application/octet-stream":
+            mime_type = "video/mp4"
+        elif clean_filename.lower().endswith(".webm"):
+            mime_type = "video/webm"
+        elif clean_filename.lower().endswith((".mkv", ".mov")):
+            mime_type = "video/mp4"
+
         return TelegramMediaInfo(
             message_id=message_id,
             channel_id=entity.id,
