@@ -8,12 +8,49 @@ import re
 import struct
 import zlib
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from aiohttp import web
 
 from telegram_streamer import TelegramStreamer
 
 logger = logging.getLogger("televid.stream_server")
+
+# In-memory metadata store untuk OpenGraph Shim endpoint.
+# Menyimpan metadata video saat bot membuat link, sehingga /embed/<token> dapat
+# merespons Discordbot crawler dalam hitungan < 1ms TANPA perlu koneksi ke Telegram.
+EMBED_METADATA_STORE: Dict[str, dict] = {}
+
+
+def register_embed_token(
+    channel_id: int,
+    message_id: int,
+    title: str,
+    description: str,
+    width: int,
+    height: int,
+    filename: str
+) -> str:
+    """
+    Mendaftarkan metadata video ke memori dan menghasilkan token unik.
+    Memungkinkan endpoint /embed/<token> merespons instan tanpa I/O Telegram.
+    """
+    cid_str = str(channel_id).replace("-100", "").replace("-", "")
+    token = f"{cid_str}_{message_id}_{filename}"
+    meta = {
+        "channel_id": channel_id,
+        "message_id": message_id,
+        "title": title,
+        "description": description,
+        "width": width or 1280,
+        "height": height or 720,
+        "filename": filename
+    }
+    EMBED_METADATA_STORE[token] = meta
+    # Daftarkan juga alias token pendek tanpa filename: {cid}_{mid}
+    short_token = f"{cid_str}_{message_id}"
+    EMBED_METADATA_STORE[short_token] = meta
+    return token
+
 
 # Fallback thumbnail 640x360 dark PNG untuk Discord og:image jika Telegram tidak memiliki thumb
 def _generate_fallback_png(w: int = 640, h: int = 360) -> bytes:
@@ -73,9 +110,15 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
 
         if not channel_id_raw or not message_id_raw:
             token = request.match_info.get("token", "")
-            channel_id_raw, message_id_raw, filename_parsed = parse_token(token)
-            if filename_parsed:
-                filename = filename_parsed
+            if token in EMBED_METADATA_STORE:
+                meta = EMBED_METADATA_STORE[token]
+                channel_id_raw = str(meta["channel_id"])
+                message_id_raw = str(meta["message_id"])
+                filename = meta["filename"]
+            else:
+                channel_id_raw, message_id_raw, filename_parsed = parse_token(token)
+                if filename_parsed:
+                    filename = filename_parsed
 
         filename = filename or "video.mp4"
 
@@ -175,50 +218,71 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         """
         Endpoint OpenGraph Video Shim untuk Discord.
         Mendukung rute:
+        - /embed/{token}
         - /embed/{channel_id}/{message_id}/{filename}
-        - /embed/{token} (token: channel_id_message_id_filename)
         - /watch/{channel_id}/{message_id}/{filename} (backward compatibility)
 
-        Menghasilkan HTML shim super ringan dengan meta tags OpenGraph & Twitter Card
-        agar Discordbot crawler langsung menampilkan playable video player tanpa timeout.
+        Menghasilkan HTML shim super ringan (~10 baris) dengan meta tags OpenGraph & Twitter Card
+        dalam < 1ms (tanpa koneksi ke Telegram) agar Discordbot crawler langsung menampilkan playable embed.
         """
+        token = request.match_info.get("token")
         channel_id_raw = request.match_info.get("channel_id")
         message_id_raw = request.match_info.get("message_id")
         filename_raw = request.match_info.get("filename")
 
-        if not channel_id_raw or not message_id_raw:
-            token = request.match_info.get("token", "")
-            channel_id_raw, message_id_raw, filename_parsed = parse_token(token)
-            if filename_parsed:
-                filename_raw = filename_parsed
+        # 1. Cek langsung dari in-memory token store untuk respon instan < 1ms tanpa koneksi Telegram
+        meta = None
+        if token and token in EMBED_METADATA_STORE:
+            meta = EMBED_METADATA_STORE[token]
+        elif channel_id_raw and message_id_raw:
+            cid_str = str(channel_id_raw).replace("-100", "").replace("-", "")
+            meta = EMBED_METADATA_STORE.get(f"{cid_str}_{message_id_raw}")
+        elif token:
+            c_raw, m_raw, fn_raw = parse_token(token)
+            if c_raw and m_raw:
+                meta = EMBED_METADATA_STORE.get(f"{c_raw}_{m_raw}")
 
-        try:
-            channel_id = int(channel_id_raw)
-            message_id = int(message_id_raw)
-            info = await telegram_streamer.get_media_info(channel_id, message_id)
-        except Exception as e:
-            logger.warning(f"Embed endpoint gagal memuat media {channel_id_raw}/{message_id_raw}: {e}")
-            raise web.HTTPNotFound(text="Video tidak ditemukan.")
+        if meta:
+            channel_id = meta["channel_id"]
+            message_id = meta["message_id"]
+            video_title = meta["title"]
+            video_description = meta["description"]
+            width = meta["width"]
+            height = meta["height"]
+            clean_filename = meta["filename"]
+            effective_token = token or f"{str(channel_id).replace('-100', '').replace('-', '')}_{message_id}_{clean_filename}"
+        else:
+            # Fallback jika metadata belum terdaftar di memori (misal server baru restart)
+            if not channel_id_raw or not message_id_raw:
+                channel_id_raw, message_id_raw, filename_parsed = parse_token(token or "")
+                if filename_parsed:
+                    filename_raw = filename_parsed
+
+            try:
+                channel_id = int(channel_id_raw)
+                message_id = int(message_id_raw)
+                info = await telegram_streamer.get_media_info(channel_id, message_id)
+            except Exception as e:
+                logger.warning(f"Embed endpoint gagal memuat media {channel_id_raw}/{message_id_raw}: {e}")
+                raise web.HTTPNotFound(text="Video tidak ditemukan.")
+
+            video_title = info.filename
+            video_description = f"Ukuran: {info.formatted_size}"
+            width = info.width or 1280
+            height = info.height or 720
+            clean_filename = filename_raw or info.filename
+            cid_clean = str(channel_id).replace("-100", "").replace("-", "")
+            effective_token = token or f"{cid_clean}_{message_id}_{clean_filename}"
 
         host = request.headers.get("Host", request.host)
         scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
-        clean_filename = filename_raw or info.filename
-        stream_url = f"{scheme}://{host}/stream/{channel_id}/{message_id}/{clean_filename}"
-        thumb_url = f"{scheme}://{host}/thumb/{channel_id}/{message_id}.jpg"
-        width = info.width or 1280
-        height = info.height or 720
-        video_title = info.filename
-        video_description = f"Ukuran: {info.formatted_size}"
+        public_base_url = f"{scheme}://{host}"
+        stream_url = f"{public_base_url}/stream/{effective_token}"
+        thumb_url = f"{public_base_url}/thumb/{channel_id}/{message_id}.jpg"
 
         html = f"""<!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>{video_title}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#5865F2">
-
-  <!-- OpenGraph Video Shim untuk Discord -->
   <meta property="og:type" content="video.other">
   <meta property="og:title" content="{video_title}">
   <meta property="og:description" content="{video_description}">
@@ -227,34 +291,16 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
   <meta property="og:video:type" content="video/mp4">
   <meta property="og:video:width" content="{width}">
   <meta property="og:video:height" content="{height}">
-
-  <!-- Video Poster Thumbnail (mencegah Discord crawl video besar untuk buat thumbnail) -->
   <meta property="og:image" content="{thumb_url}">
-  <meta property="og:image:url" content="{thumb_url}">
   <meta property="og:image:secure_url" content="{thumb_url}">
   <meta property="og:image:type" content="image/jpeg">
   <meta property="og:image:width" content="{width}">
   <meta property="og:image:height" content="{height}">
-
-  <!-- Twitter Player Card -->
   <meta name="twitter:card" content="player">
-  <meta name="twitter:title" content="{video_title}">
-  <meta name="twitter:description" content="{video_description}">
-  <meta name="twitter:image" content="{thumb_url}">
   <meta name="twitter:player:stream" content="{stream_url}">
   <meta name="twitter:player:stream:content_type" content="video/mp4">
-  <meta name="twitter:player:width" content="{width}">
-  <meta name="twitter:player:height" content="{height}">
 </head>
-<body style="margin:0; background:#0b0f19; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; color:#ffffff;">
-  <video controls autoplay playsinline style="max-width:96%; max-height:85vh; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
-    <source src="{stream_url}" type="video/mp4">
-    Browser Anda tidak mendukung HTML5 video playback.
-  </video>
-  <div style="margin-top:12px; font-size:14px; opacity:0.8;">
-    <b>{video_title}</b> • {video_description}
-  </div>
-</body>
+<body></body>
 </html>"""
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "public, max-age=3600"})
 

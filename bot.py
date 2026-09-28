@@ -17,7 +17,7 @@ from aiohttp import web
 from config import Config
 from telegram_parser import parse_telegram_link
 from telegram_streamer import TelegramStreamer
-from stream_server import create_stream_app
+from stream_server import create_stream_app, register_embed_token
 
 # Setup logging
 logging.basicConfig(
@@ -197,11 +197,18 @@ async def on_message(message: discord.Message):
                 parsed = parse_telegram_link(link)
                 channel_target = parsed.full_channel_id or parsed.raw_channel_id or parsed.username
                 info = await tg_streamer.get_media_info(channel_target, parsed.message_id)
-
                 base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
-                cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
-                embed_url = f"{base_url}/embed/{cid_str}/{info.message_id}/{info.filename}"
-                stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
+                token = register_embed_token(
+                    channel_id=info.channel_id,
+                    message_id=info.message_id,
+                    title=info.filename,
+                    description=f"Ukuran: {info.formatted_size}",
+                    width=info.width or 1280,
+                    height=info.height or 720,
+                    filename=info.filename
+                )
+                embed_url = f"{base_url}/embed/{token}"
+                stream_url = f"{base_url}/stream/{token}"
 
                 view = PlayerToggleView(
                     filename=info.filename,
@@ -281,9 +288,17 @@ async def televid_command(interaction: discord.Interaction, link: str):
 
     # 4. Generate URL Streaming & OpenGraph Embed Shim URL
     base_url = Config.STREAM_BASE_URL or f"http://{Config.WEB_HOST}:{Config.WEB_PORT}"
-    cid_str = str(info.channel_id).replace("-100", "").replace("-", "")
-    embed_url = f"{base_url}/embed/{cid_str}/{info.message_id}/{info.filename}"
-    stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
+    token = register_embed_token(
+        channel_id=info.channel_id,
+        message_id=info.message_id,
+        title=info.filename,
+        description=f"Ukuran: {info.formatted_size}",
+        width=info.width or 1280,
+        height=info.height or 720,
+        filename=info.filename
+    )
+    embed_url = f"{base_url}/embed/{token}"
+    stream_url = f"{base_url}/stream/{token}"
 
     # 5. Kirim respon interaktif dengan 2 opsi player (Player dalam Embed & Langsung Embed Video)
     view = PlayerToggleView(
