@@ -289,6 +289,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         public_base_url = f"{scheme}://{host}"
         stream_url = f"{public_base_url}/stream/{effective_token}"
         poster_url = f"{public_base_url}/poster/{effective_token}"
+        player_url = f"{public_base_url}/player/{effective_token}"
 
         html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -297,31 +298,35 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{video_title}</title>
 
-  <!-- Discord & Twitter Rich Embed Tags -->
-  <meta name="twitter:card" content="summary_large_image">
+  <!-- Discord & Twitter Player Card Tags -->
+  <meta name="twitter:card" content="player">
+  <meta name="twitter:title" content="{video_title}">
+  <meta name="twitter:description" content="Streamed via Media Bridge Bot">
   <meta name="twitter:image" content="{poster_url}">
   <meta name="twitter:image:alt" content="{video_title}">
+  <meta name="twitter:player" content="{player_url}">
+  <meta name="twitter:player:width" content="{width}">
+  <meta name="twitter:player:height" content="{height}">
+  <meta name="twitter:player:stream" content="{stream_url}">
+  <meta name="twitter:player:stream:content_type" content="video/mp4">
+
+  <!-- OpenGraph Video Tags -->
+  <meta property="og:type" content="video.other">
+  <meta property="og:title" content="{video_title}">
+  <meta property="og:description" content="Streamed via Media Bridge Bot">
+  <meta property="og:video:url" content="{stream_url}">
+  <meta property="og:video:secure_url" content="{stream_url}">
+  <meta property="og:video:type" content="video/mp4">
+  <meta property="og:video:width" content="{width}">
+  <meta property="og:video:height" content="{height}">
+
+  <!-- OpenGraph Image Poster -->
   <meta property="og:image" content="{poster_url}">
   <meta property="og:image:secure_url" content="{poster_url}">
   <meta property="og:image:type" content="image/jpeg">
   <meta property="og:image:width" content="{width}">
   <meta property="og:image:height" content="{height}">
   <meta property="og:image:alt" content="{video_title}">
-
-  <meta property="og:title" content="{video_title}">
-  <meta name="twitter:title" content="{video_title}">
-  <meta property="og:description" content="Streamed via Media Bridge Bot">
-  <meta name="twitter:description" content="Streamed via Media Bridge Bot">
-
-  <!-- OpenGraph Video Tags -->
-  <meta property="og:type" content="video.other">
-  <meta property="og:video:url" content="{stream_url}">
-  <meta property="og:video:secure_url" content="{stream_url}">
-  <meta property="og:video:type" content="video/mp4">
-  <meta property="og:video:width" content="{width}">
-  <meta property="og:video:height" content="{height}">
-  <meta name="twitter:player:stream" content="{stream_url}">
-  <meta name="twitter:player:stream:content_type" content="video/mp4">
 
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -409,7 +414,114 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         return web.Response(
             text=html,
             content_type="text/html",
+            charset="utf-8",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+        )
+
+    async def handle_player(request: web.Request) -> web.Response:
+        """
+        Endpoint standalone iframe player untuk twitter:player card Discord.
+        Mendukung rute:
+        - /player/{token}
+        - /player/{channel_id}/{message_id}/{filename}
+
+        Menghasilkan HTML player minimalis full-screen tanpa header/footer/dekorasi,
+        merespons super cepat (< 500ms) tanpa menyentuh koneksi Telegram.
+        """
+        token = request.match_info.get("token")
+        channel_id_raw = request.match_info.get("channel_id")
+        message_id_raw = request.match_info.get("message_id")
+        filename_raw = request.match_info.get("filename")
+
+        # 1. Cek langsung dari in-memory token store untuk respon instan < 1ms
+        meta = None
+        if token and token in EMBED_METADATA_STORE:
+            meta = EMBED_METADATA_STORE[token]
+        elif channel_id_raw and message_id_raw:
+            cid_str = str(channel_id_raw).replace("-100", "").replace("-", "")
+            meta = EMBED_METADATA_STORE.get(f"{cid_str}_{message_id_raw}")
+        elif token:
+            c_raw, m_raw, fn_raw = parse_token(token)
+            if c_raw and m_raw:
+                meta = EMBED_METADATA_STORE.get(f"{c_raw}_{m_raw}")
+
+        if meta:
+            video_title = meta["title"]
+            clean_filename = meta["filename"]
+            channel_id = meta["channel_id"]
+            message_id = meta["message_id"]
+            cid_clean = str(channel_id).replace("-100", "").replace("-", "")
+            effective_token = token or f"{cid_clean}_{message_id}_{clean_filename}"
+        else:
+            # Parse token langsung tanpa memanggil API Telegram agar respon < 500ms
+            if not channel_id_raw or not message_id_raw:
+                c_raw, m_raw, fn_raw = parse_token(token or "")
+                if c_raw and m_raw:
+                    channel_id_raw, message_id_raw = c_raw, m_raw
+                    filename_raw = fn_raw or "video.mp4"
+
+            if channel_id_raw and message_id_raw:
+                clean_filename = filename_raw or "video.mp4"
+                video_title = clean_filename
+                cid_clean = str(channel_id_raw).replace("-100", "").replace("-", "")
+                effective_token = token or f"{cid_clean}_{message_id_raw}_{clean_filename}"
+            else:
+                raise web.HTTPNotFound(text="Player tidak ditemukan.")
+
+        host = request.headers.get("Host", request.host)
+        scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+        public_base_url = f"{scheme}://{host}"
+        stream_url = f"{public_base_url}/stream/{effective_token}"
+        poster_url = f"{public_base_url}/poster/{effective_token}"
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{video_title}</title>
+  <style>
+    * {{
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }}
+    html, body {{
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }}
+    video {{
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+      display: block;
+    }}
+  </style>
+</head>
+<body>
+  <video
+    controls
+    autoplay
+    playsinline
+    preload="metadata"
+    poster="{poster_url}"
+  >
+    <source src="{stream_url}" type="video/mp4">
+    Your browser does not support HTML5 video.
+  </video>
+</body>
+</html>"""
+        return web.Response(
+            text=html,
+            content_type="text/html",
+            charset="utf-8",
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "Access-Control-Allow-Origin": "*"
+            }
         )
 
     async def handle_poster(request: web.Request) -> web.Response:
@@ -496,6 +608,8 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     app.router.add_route("*", "/stream/{token}", handle_stream)
     app.router.add_get("/embed/{channel_id}/{message_id}/{filename}", handle_embed)
     app.router.add_get("/embed/{token}", handle_embed)
+    app.router.add_get("/player/{channel_id}/{message_id}/{filename}", handle_player)
+    app.router.add_get("/player/{token}", handle_player)
     app.router.add_get("/watch/{channel_id}/{message_id}/{filename}", handle_embed)
     app.router.add_get("/poster/{channel_id}/{message_id}.jpg", handle_poster)
     app.router.add_get("/poster/{token}", handle_poster)
