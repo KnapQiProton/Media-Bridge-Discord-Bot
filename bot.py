@@ -127,6 +127,12 @@ async def on_message(message: discord.Message):
                 watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}?v={int(time.time())}"
                 stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
 
+                import urllib.parse
+                thumb_url = f"{base_url}/thumb/{cid_str}/{info.message_id}.jpg"
+                w = info.width or 1280
+                h = info.height or 720
+                ac_url = f"https://autocompressor.net/av1?v={urllib.parse.quote(stream_url, safe='')}&i={urllib.parse.quote(thumb_url, safe='')}&w={w}&h={h}"
+
                 response_text = (
                     f"🎬 **{info.filename}** ({info.formatted_size})\n\n"
                     f"{watch_url}\n\n"
@@ -136,6 +142,7 @@ async def on_message(message: discord.Message):
                 view = discord.ui.View()
                 view.add_item(discord.ui.Button(label="🌐 Web Player", url=watch_url, style=discord.ButtonStyle.link))
                 view.add_item(discord.ui.Button(label="⬇️ Download Langsung", url=stream_url, style=discord.ButtonStyle.link))
+                view.add_item(discord.ui.Button(label="⚡ Autocompressor Link", url=ac_url, style=discord.ButtonStyle.link))
 
                 await message.reply(response_text, view=view, mention_author=False)
                 logger.info(f"✅ Auto-detect link Telegram berhasil untuk pesan ID {info.message_id}")
@@ -213,6 +220,12 @@ async def televid_command(interaction: discord.Interaction, link: str):
     watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}?v={cache_bust}"
     stream_url = f"{base_url}/stream/{cid_str}/{info.message_id}/{info.filename}"
 
+    import urllib.parse
+    thumb_url = f"{base_url}/thumb/{cid_str}/{info.message_id}.jpg"
+    w = info.width or 1280
+    h = info.height or 720
+    ac_url = f"https://autocompressor.net/av1?v={urllib.parse.quote(stream_url, safe='')}&i={urllib.parse.quote(thumb_url, safe='')}&w={w}&h={h}"
+
     # 5. Kirim respon ke Discord
     # Meletakkan watch_url pada baris tersendiri memicu Discord scraper untuk membaca
     # OpenGraph video tags dan menampilkan inline playable HTML5 video player secara langsung di dalam chat.
@@ -225,6 +238,7 @@ async def televid_command(interaction: discord.Interaction, link: str):
     view = discord.ui.View()
     view.add_item(discord.ui.Button(label="🌐 Web Player", url=watch_url, style=discord.ButtonStyle.link))
     view.add_item(discord.ui.Button(label="⬇️ Download Langsung", url=stream_url, style=discord.ButtonStyle.link))
+    view.add_item(discord.ui.Button(label="⚡ Autocompressor Link", url=ac_url, style=discord.ButtonStyle.link))
 
     await interaction.followup.send(response_text, view=view)
     logger.info(f"✅ Berhasil memproses televid untuk file '{info.filename}' (Ukuran: {info.formatted_size})")
