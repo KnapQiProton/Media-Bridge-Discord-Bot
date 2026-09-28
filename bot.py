@@ -172,18 +172,17 @@ async def televid_command(interaction: discord.Interaction, link: str):
     watch_url = f"{base_url}/watch/{cid_str}/{info.message_id}/{info.filename}"
 
     # 5. Kirim respon ke Discord
-    # Mengirim watch_url agar Discord scraper membaca OpenGraph video tags dan menampilkan inline player
+    # PENTING: Jangan bungkus stream_url dengan <...> karena Discord akan menonaktifkan embed!
+    # Menempatkan link langsung berakhiran .mp4 pada baris tersendiri akan memicu Discord
+    # untuk menampilkan native inline video player secara langsung di dalam chat.
     response_text = (
-        f"🎬 **Video siap diputar!**\n"
-        f"**Nama:** `{info.filename}`\n"
-        f"**Ukuran:** `{info.formatted_size}`\n"
-        f"**URL:** {watch_url}\n"
-        f"*(Direct Stream: <{stream_url}>)*"
+        f"🎬 **{info.filename}** ({info.formatted_size})\n\n"
+        f"{stream_url}"
     )
 
     view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Tonton di Browser", url=watch_url, style=discord.ButtonStyle.link))
-    view.add_item(discord.ui.Button(label="Direct Download", url=stream_url, style=discord.ButtonStyle.secondary))
+    view.add_item(discord.ui.Button(label="🌐 Web Player", url=watch_url, style=discord.ButtonStyle.link))
+    view.add_item(discord.ui.Button(label="⬇️ Download", url=stream_url, style=discord.ButtonStyle.link))
 
     await interaction.followup.send(response_text, view=view)
     logger.info(f"✅ Berhasil memproses televid untuk file '{info.filename}' (Ukuran: {info.formatted_size})")

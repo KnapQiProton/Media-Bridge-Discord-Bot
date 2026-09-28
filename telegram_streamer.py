@@ -267,3 +267,23 @@ class TelegramStreamer:
             bytes_sent += len(chunk)
             if limit is not None and bytes_sent >= limit:
                 break
+
+    async def get_thumbnail_bytes(self, channel_identifier: any, message_id: int) -> Optional[bytes]:
+        """Download thumbnail media Telegram untuk OpenGraph og:image (ukuran kecil < 50KB)."""
+        if not self._is_started or not self.client:
+            return None
+
+        peer = channel_identifier
+        if isinstance(peer, int) and peer > 0:
+            peer = int(f"-100{peer}")
+
+        try:
+            entity = await self.client.get_entity(peer)
+            message = await self.client.get_messages(entity, ids=message_id)
+            if message and message.media:
+                thumb = await self.client.download_media(message.media, thumb=-1, file=bytes)
+                if thumb and isinstance(thumb, bytes):
+                    return thumb
+        except Exception as e:
+            logger.debug(f"Thumbnail tidak dapat diambil: {e}")
+        return None

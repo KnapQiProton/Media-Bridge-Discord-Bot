@@ -5,6 +5,8 @@ HTTP Range Requests (206 Partial Content) dan OpenGraph Video Embed untuk Discor
 """
 
 import re
+import struct
+import zlib
 import logging
 from typing import Optional
 from aiohttp import web
@@ -12,6 +14,16 @@ from aiohttp import web
 from telegram_streamer import TelegramStreamer
 
 logger = logging.getLogger("televid.stream_server")
+
+# Fallback thumbnail 640x360 dark PNG untuk Discord og:image jika Telegram tidak memiliki thumb
+def _generate_fallback_png(w: int = 640, h: int = 360) -> bytes:
+    raw_data = b"".join([b"\x00" + bytes([20, 24, 33]) * w for _ in range(h)])
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
+    ihdr = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw_data)) + chunk(b'IEND', b'')
+
+FALLBACK_THUMB_PNG = _generate_fallback_png()
 
 # Regex untuk membaca HTTP Range header
 RE_RANGE = re.compile(r"^bytes=(\d+)-(\d+)?$")
@@ -144,6 +156,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
         host = request.headers.get("Host", request.host)
         scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
         stream_url = f"{scheme}://{host}/stream/{channel_id}/{message_id}/{filename}"
+        thumb_url = f"{scheme}://{host}/thumb/{channel_id}/{message_id}.jpg"
         width = info.width or 1280
         height = info.height or 720
 
@@ -158,6 +171,8 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     <meta property="og:title" content="{info.filename}">
     <meta property="og:description" content="Ukuran: {info.formatted_size}">
     <meta property="og:type" content="video.other">
+    <meta property="og:image" content="{thumb_url}">
+    <meta property="og:image:type" content="image/jpeg">
     <meta property="og:video" content="{stream_url}">
     <meta property="og:video:url" content="{stream_url}">
     <meta property="og:video:secure_url" content="{stream_url}">
@@ -167,6 +182,7 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
     <!-- Twitter Player Card -->
     <meta name="twitter:card" content="player">
     <meta name="twitter:title" content="{info.filename}">
+    <meta name="twitter:image" content="{thumb_url}">
     <meta name="twitter:player" content="{stream_url}">
     <meta name="twitter:player:width" content="{width}">
     <meta name="twitter:player:height" content="{height}">
@@ -180,10 +196,27 @@ def create_stream_app(telegram_streamer: TelegramStreamer) -> web.Application:
 </html>"""
         return web.Response(text=html, content_type="text/html")
 
+    async def handle_thumb(request: web.Request) -> web.Response:
+        """Endpoint thumbnail media untuk Discord og:image."""
+        channel_id_raw = request.match_info.get("channel_id")
+        message_id_raw = request.match_info.get("message_id")
+        try:
+            channel_id = int(channel_id_raw)
+            message_id = int(message_id_raw)
+            thumb_data = await telegram_streamer.get_thumbnail_bytes(channel_id, message_id)
+            if thumb_data:
+                return web.Response(body=thumb_data, content_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+        except Exception:
+            pass
+
+        # Fallback: 640x360 placeholder PNG
+        return web.Response(body=FALLBACK_THUMB_PNG, content_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
     # Daftarkan rute
     app.router.add_get("/", handle_health)
     app.router.add_get("/health", handle_health)
     app.router.add_route("*", "/stream/{channel_id}/{message_id}/{filename}", handle_stream)
     app.router.add_get("/watch/{channel_id}/{message_id}/{filename}", handle_watch)
+    app.router.add_get("/thumb/{channel_id}/{message_id}.jpg", handle_thumb)
 
     return app
