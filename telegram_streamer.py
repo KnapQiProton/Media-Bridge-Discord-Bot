@@ -155,15 +155,29 @@ class TelegramStreamer:
         # Ambil pesan berdasarkan message_id
         try:
             message = await self.client.get_messages(entity, ids=message_id)
+            if isinstance(message, list):
+                message = message[0] if message else None
         except Exception as e:
             logger.error(f"Gagal mengambil pesan ID {message_id}: {e}")
-            raise FileNotFoundError("Pesan Telegram tidak ditemukan.")
+            raise FileNotFoundError(f"Pesan Telegram ID {message_id} tidak ditemukan ({e}).")
 
         if not message:
             raise FileNotFoundError(f"Pesan ID {message_id} tidak ditemukan di channel tersebut.")
 
+        media_type_name = type(message.media).__name__ if message.media else "None"
+        preview_text = repr(message.text or "")[:80]
+        logger.info(f"📥 Pesan Telegram ID {message_id} ditemukan: media={media_type_name}, text={preview_text}")
+
         if not message.media:
-            raise ValueError("Pesan tersebut tidak memiliki lampiran media (video/dokumen).")
+            msg_snippet = f": '{message.text}'" if message.text else ""
+            raise ValueError(
+                f"Pesan ID {message_id} tidak memiliki file video (isi teks pesan{msg_snippet}).\n"
+                f"👉 Pastikan Anda menyalin link dari gelembung pesan yang memuat file video."
+            )
+
+        # Cek jika media berupa web link preview biasa
+        if hasattr(message.media, "webpage"):
+            raise ValueError("Pesan tersebut berupa preview link web, bukan file video yang diunggah ke Telegram.")
 
         # Ekstrak informasi dokumen / video
         filename = f"video_{message_id}.mp4"
@@ -191,9 +205,9 @@ class TelegramStreamer:
         elif hasattr(message.media, "photo") and message.media.photo:
             filename = f"photo_{message_id}.jpg"
             mime_type = "image/jpeg"
-            size = 1024 * 1024  # perkiraan fallback
+            size = 1024 * 1024
         else:
-            raise ValueError("Tipe media tidak didukung untuk streaming video.")
+            raise ValueError(f"Tipe media '{media_type_name}' belum didukung untuk streaming video.")
 
         # Sanitasi nama file agar aman di URL
         clean_filename = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', filename)
